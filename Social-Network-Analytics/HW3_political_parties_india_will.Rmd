@@ -1,0 +1,576 @@
+---
+title: "HW3_Wei(Will)Jiang"
+author: "Wei (Will) Jiang"
+date: "11/8/2021"
+output: html_document
+---
+# Set up
+```{r, message=FALSE}
+library(igraph)
+library(data.table)
+library(tidyverse)
+library(splitstackshape)
+library(PearsonDS)
+library(plm)
+library(pglm)
+library(hhi)
+border= fread("border_information.csv", header=TRUE)
+election= fread("election_results.csv", header=TRUE)
+rainfall= fread("monthly_rainfall.csv", header=TRUE)
+```
+
+# Data cleaning
+```{r,message=FALSE}
+#first get the year of each time
+rainfall$time <- as.integer(rainfall$time)
+
+#then sum rainfall data when they belongs to a same year and same district
+rainfall <- rainfall %>%
+  group_by(district,time) %>%
+  summarise(rainfall = sum(rainfall))
+  
+#calculate yearly mean across districts and yearly variance across districts, and then join the average and variance to the rainfall table
+rainfall_cal <- rainfall %>%
+  group_by(district) %>%
+  summarise(rainfall_avg = mean(rainfall),rainfall_var = var(rainfall))
+
+rainfall_norm <- left_join(rainfall,rainfall_cal,by='district')
+
+#in order to use Pearson type III distribution to do pearson transform by using qpearsonIII() function, need calculate rain_norm by using p_norm and use them to calculate scale and shape here for each district-year
+#assumption: since the skewness of rainfall is positive, the location parameter c is equal to 0
+
+rainfall_norm$rain_norm <- pnorm(rainfall_norm$rainfall,
+                             mean = rainfall_norm$rainfall_avg, 
+                             sd = sqrt(rainfall_norm$rainfall_var))
+
+rainfall_norm$scale <- rainfall_norm$rainfall_var / rainfall_norm$rainfall_avg
+rainfall_norm$shape <- rainfall_norm$rainfall_avg ** 2 / rainfall_norm$rainfall_var
+
+#use Pearson type III distribution to do pearson transform by using qpearsonIII() function
+rainfall_norm$pearson <- qpearsonIII(p = rainfall_norm$rain_norm, 
+                                 shape = rainfall_norm$shape, 
+                                 location = 0, 
+                                 scale = rainfall_norm$scale)
+
+#get SPI(Standardized Precipitation Index) for each district-year : to work with rainfall in a way that is comparable across different regions across time
+pearson_cal <- rainfall_norm %>%
+  group_by(district) %>%
+  summarise(pearson_avg = mean(pearson),pearson_sd = sd(pearson))
+
+rainfall_norm <- left_join(rainfall_norm,pearson_cal,by='district')
+
+rainfall_norm$SPI <- (rainfall_norm$pearson - rainfall_norm$pearson_avg) / rainfall_norm$pearson_sd
+
+#mutate a new column to show if it's a election year or not (yes is 1 and no is 0)
+election_time <- unique(election[,'year']) %>%
+  mutate(is_election = 1) #find the election time period: each election year
+
+rainfall_norm <- left_join(rainfall_norm,election_time,by=c('time'='year'))
+rainfall_norm$is_election <- replace_na(rainfall_norm$is_election,0) #replace NA with 0
+
+```
+
+# Q1
+
+## Q1(A)
+```{r,message=FALSE}
+#calculate the number of political parties that are founded in a district
+election_sub <- election[,c('district','party_name','year','party_issue')]
+
+election_sub <- election_sub %>%
+  arrange(district,party_name,year) %>% #reorder
+  group_by(district,party_name) %>%
+  summarise(time = min(year)) %>% #find the earliest year that a party founded in a district
+  group_by(district,time) %>% #find the number of new party in each district-year pair
+  summarise(found_num = n()) #group_by %>% summarise(n()) is equal to count()
+
+#filter out time period between earliest and most recent election year and SPI for those year by district
+rainfall_Q1 <- rainfall_norm %>%
+  select(district,time,is_election,SPI) %>%
+  filter(time %in% c(1946:1999))
+
+#join new party data to rainfall data
+rainfall_Q1 <- left_join(rainfall_Q1,election_sub,by=c('district','time'))
+rainfall_Q1$found_num <- replace_na(rainfall_Q1$found_num,0) #replace NA with 0
+
+#group each year to election year groups
+rainfall_Q1 <- rainfall_Q1 %>% mutate(
+  election_group = case_when(
+  time %in% c(1946:1951) ~ 1,
+  time %in% c(1952:1957) ~ 2,
+  time %in% c(1958:1962) ~ 3,
+  time %in% c(1963:1967) ~ 4,
+  time %in% c(1968:1971) ~ 5,
+  time %in% c(1972:1977) ~ 6,
+  time %in% c(1978:1980) ~ 7,
+  time %in% c(1981:1984) ~ 8,
+  time %in% c(1985:1985) ~ 9,
+  time %in% c(1986:1989) ~ 10,
+  time %in% c(1990:1991) ~ 11,
+  time %in% c(1992:1996) ~ 12,
+  time %in% c(1997:1998) ~ 13,
+  time %in% c(1999:1999) ~ 14
+)
+)
+
+#calculate average SPI in a district across each year from the prior election to the current election
+rainfall_Q1_plot <- rainfall_Q1 %>% 
+  group_by(district,election_group,.drop = FALSE) %>%
+  summarise(SPI_avg = mean(SPI),found_num = sum(found_num))
+
+# plot a scatter plot showing the visual relationship
+ggplot(rainfall_Q1_plot, aes(found_num,SPI_avg)) +
+  geom_point() +
+  labs(x='Number of New Party Founded', y='Average Rainfall SPI')+
+  scale_x_continuous(breaks=seq(0,12,by=1))
+```
+
+## Q1(B)
+```{r,message=FALSE}
+#calculate a district and its neighbors' lagged rainfall SPI value
+
+#get a table with both district and its neighbor data, multiple neighbors use average number
+rainfall_Q1_border <- rainfall_Q1[,c('district','time','SPI')]
+rainfall_Q1_border <- left_join(border,rainfall_Q1_border,by=c('focal_district'='district'))
+rainfall_Q1_border <- inner_join(rainfall_Q1_border,rainfall_Q1_border,by=c('district'='focal_district','time'='time'))
+rainfall_Q1_border <- distinct(rainfall_Q1_border,focal_district,district,time,SPI.x,SPI.y)
+rainfall_Q1_border <- rainfall_Q1_border %>% 
+  group_by(focal_district,time) %>%
+  summarise(SPI_nb = mean(SPI.y))
+
+rainfall_Q1 <- inner_join(rainfall_Q1,rainfall_Q1_border,by=c('district'='focal_district','time'='time'))
+
+#add a new column to show the number of years in each election period
+rainfall_Q1 <- rainfall_Q1 %>% mutate(
+  year_num = case_when(
+  election_group == 1 ~ (1951-1946+1),
+  election_group == 2 ~ (1957-1952+1),
+  election_group == 3 ~ (1962-1958+1),
+  election_group == 4 ~ (1967-1963+1),
+  election_group == 5 ~ (1971-1968+1),
+  election_group == 6 ~ (1977-1972+1),
+  election_group == 7 ~ (1980-1978+1),
+  election_group == 8 ~ (1984-1981+1),
+  election_group == 9 ~ (1985-1985+1),
+  election_group == 10 ~ (1989-1986+1),
+  election_group == 11 ~ (1991-1990+1),
+  election_group == 12 ~ (1996-1992+1),
+  election_group == 13 ~ (1998-1997+1),
+  election_group == 14 ~ (1999-1999+1)
+)
+)
+
+#group by district-election_group
+rainfall_Q1_B <- rainfall_Q1 %>%
+  group_by(district,election_group) %>%
+  summarise(SPI_avg = mean(SPI),SPI_nb_avg = mean(SPI_nb),year_num = mean(year_num))
+
+#calculate a district's lagged rainfall SPI value and its neighbors' lag SPI by election period
+rainfall_Q1_B$SPI_lag <- shift(rainfall_Q1_B$SPI_avg) #lag is not working here so I use shift
+rainfall_Q1_B$SPI_nb_lag <- shift(rainfall_Q1_B$SPI_nb_avg)
+
+#run regression between SPI and it's lag SPI & neighbors' lag SPI
+plm_lag <- plm(SPI_avg ~ SPI_lag + SPI_nb_lag + year_num, data = rainfall_Q1_B, effect = "twoways", model = "within", index ="district")
+summary(plm_lag)
+```
+
+Comment: From the regression above, we can see that both SPI_lag and SPI_nb_lag is statistically significant, so the SPI is not independent from one election period to the next within a district, as well as from neighboring districts from one election period to the next.
+
+## Q1(C)
+```{r,message=FALSE}
+#create a new logical column to see whether its a moderate weather (flood or drought) or not
+rainfall_Q1 <- rainfall_Q1 %>%
+  mutate(is_moderate = ifelse(SPI < -1 | SPI > 1,1,0),
+         is_moderate_nb = ifelse(SPI_nb < -1 | SPI_nb > 1,1,0))
+
+#group by district-election_group
+rainfall_Q1_C <- rainfall_Q1 %>%
+  group_by(district,election_group) %>%
+  summarise(moderate_num = sum(is_moderate),moderate_num_nb = sum(is_moderate_nb),year_num = mean(year_num))
+
+#calculate a district's lagged moderate weather number by election period
+rainfall_Q1_C$moderate_num_lag <- shift(rainfall_Q1_C$moderate_num)
+rainfall_Q1_C$moderate_num_nb_lag <- shift(rainfall_Q1_C$moderate_num_nb)
+
+#run regression between moderate weather number and it's lag
+pglm_lag <- pglm(moderate_num ~ moderate_num_lag + moderate_num_nb_lag + year_num, data = rainfall_Q1_C, effect =
+"twoways", model = "within", index = "district", family = "poisson")
+summary(pglm_lag)
+```
+
+Comment: From the regression above, we can see that both moderate_num_lag and moderate_num_nb_lag is not statistically significant,but year_num is significant. Thus, the result is quite different from the last regression result, which shows that extreme weather in a district and its neighbor districts tends not to influence a districts's next election year's extreme weather.
+
+# Q2
+
+## Q2(A)
+```{r,message=FALSE}
+#totoal persective: run regression between sum of party founded and number of moderate weather in its own district
+
+rainfall_Q2 <- rainfall_Q1 %>%
+  group_by(district,election_group) %>%
+  summarise(moderate_sum = sum(is_moderate),moderate_nb_sum = sum(is_moderate_nb),found_sum = sum(found_num),year_num = mean(year_num))
+
+pglm_2A <- pglm(found_sum ~ moderate_sum + year_num, data = rainfall_Q2, effect =
+"twoways", model = "within", index = "district", family = "poisson")
+summary(pglm_2A)
+
+```
+
+Comment: from the overall perspective, the number of extreme weather has no significant relationship to the number of new political parties founded in a district.
+
+```{r,message=FALSE}
+#party issue perspective: run regression by party issue
+
+#thoughts: I have to figure out all the 7 unique party issues first. Then I can filter out their data respectively by using filter(), and then run all the cleaning steps same as above again by using for loop.
+
+party_issue <- unique(election$party_issue)[-1]
+
+#data cleaning by party issue ------------------------------------------------------------------------------------
+
+for (issue in party_issue){
+
+#calculate the number of political parties that are founded in a district
+election_lib <- filter(election,party_issue == issue) #filter out data that party issue is liberal
+election_lib <- election_lib[,c('district','party_name','year','party_issue')]
+
+election_lib <- election_lib %>%
+  arrange(district,party_name,year) %>% #reorder
+  group_by(district,party_name) %>%
+  summarise(time = min(year)) %>% #find the earliest year that a party founded in a district
+  group_by(district,time) %>% #find the number of new party in each district-year pair
+  summarise(found_num = n()) #group_by %>% summarise(n()) is equal to count()
+
+#filter out time period between earliest and most recent election year and SPI for those year by district
+rainfall_Q1_lib <- rainfall_norm %>%
+  select(district,time,is_election,SPI) %>%
+  filter(time %in% c(1946:1999))
+
+#join new party data to rainfall data
+rainfall_Q1_lib <- left_join(rainfall_Q1_lib,election_lib,by=c('district','time'))
+rainfall_Q1_lib$found_num <- replace_na(rainfall_Q1_lib$found_num,0) #replace NA with 0
+
+#group each year to election year groups
+rainfall_Q1_lib <- rainfall_Q1_lib %>% mutate(
+  election_group = case_when(
+  time %in% c(1946:1951) ~ 1,
+  time %in% c(1952:1957) ~ 2,
+  time %in% c(1958:1962) ~ 3,
+  time %in% c(1963:1967) ~ 4,
+  time %in% c(1968:1971) ~ 5,
+  time %in% c(1972:1977) ~ 6,
+  time %in% c(1978:1980) ~ 7,
+  time %in% c(1981:1984) ~ 8,
+  time %in% c(1985:1985) ~ 9,
+  time %in% c(1986:1989) ~ 10,
+  time %in% c(1990:1991) ~ 11,
+  time %in% c(1992:1996) ~ 12,
+  time %in% c(1997:1998) ~ 13,
+  time %in% c(1999:1999) ~ 14
+)
+)
+
+#calculate a district and its neighbors' lagged rainfall SPI value
+
+#get a table with both district and its neighbor data, multiple neighbors use average number
+rainfall_Q1_lib_border <- rainfall_Q1_lib[,c('district','time','SPI')]
+rainfall_Q1_lib_border <- left_join(border,rainfall_Q1_lib_border,by=c('focal_district'='district'))
+rainfall_Q1_lib_border <- inner_join(rainfall_Q1_lib_border,rainfall_Q1_lib_border,by=c('district'='focal_district','time'='time'))
+rainfall_Q1_lib_border <- distinct(rainfall_Q1_lib_border,focal_district,district,time,SPI.x,SPI.y)
+rainfall_Q1_lib_border <- rainfall_Q1_lib_border %>% 
+  group_by(focal_district,time) %>%
+  summarise(SPI_nb = mean(SPI.y))
+
+rainfall_Q1_lib <- inner_join(rainfall_Q1_lib,rainfall_Q1_lib_border,by=c('district'='focal_district','time'='time'))
+
+#add a new column to show the number of years in each election period
+rainfall_Q1_lib <- rainfall_Q1_lib %>% mutate(
+  year_num = case_when(
+  election_group == 1 ~ (1951-1946+1),
+  election_group == 2 ~ (1957-1952+1),
+  election_group == 3 ~ (1962-1958+1),
+  election_group == 4 ~ (1967-1963+1),
+  election_group == 5 ~ (1971-1968+1),
+  election_group == 6 ~ (1977-1972+1),
+  election_group == 7 ~ (1980-1978+1),
+  election_group == 8 ~ (1984-1981+1),
+  election_group == 9 ~ (1985-1985+1),
+  election_group == 10 ~ (1989-1986+1),
+  election_group == 11 ~ (1991-1990+1),
+  election_group == 12 ~ (1996-1992+1),
+  election_group == 13 ~ (1998-1997+1),
+  election_group == 14 ~ (1999-1999+1)
+)
+)
+
+#create a new logical column to see whether its a moderate weather (flood or drought) or not
+rainfall_Q1_lib <- rainfall_Q1_lib %>%
+  mutate(is_moderate = ifelse(SPI < -1 | SPI > 1,1,0),
+         is_moderate_nb = ifelse(SPI_nb < -1 | SPI_nb > 1,1,0))
+
+rainfall_Q2_lib <- rainfall_Q1_lib %>%
+  group_by(district,election_group) %>%
+  summarise(moderate_sum = sum(is_moderate),moderate_nb_sum = sum(is_moderate_nb),found_sum = sum(found_num),year_num = mean(year_num))
+
+pglm_2A_lib <- pglm(found_sum ~ moderate_sum + year_num, data = rainfall_Q2_lib, effect =
+"twoways", model = "within", index = "district", family = "poisson")
+
+print(issue)
+print(summary(pglm_2A_lib))
+
+}
+
+```
+
+Comment: from the different party issue perspective we can find that parties whose issue is liberal and economic_nonfarming are more likely to be formed when a district experiences extreme weather.
+
+## Q2(B)
+```{r}
+#create number of moderate weather in a neighbor districts two elections ago
+rainfall_Q2 <- rainfall_Q2 %>%
+  arrange(district,election_group) %>%
+  group_by(district) %>%
+  mutate(moderate_nb_sum_lag = shift(moderate_nb_sum))
+
+#run regression between sum of party founded and number of moderate weather in its own district and its neighbor districts two elections ago
+pglm_2B <- pglm(found_sum ~ moderate_sum + moderate_nb_sum_lag + year_num, data = rainfall_Q2, effect =
+"twoways", model = "within", index = "district", family = "poisson")
+summary(pglm_2B)
+
+```
+
+Comment: from the overall perspective, the number of extreme weather in a district and its neighbor has no significant relationship to the number of new political parties founded in a district.
+
+```{r,message=FALSE}
+#party issue perspective: run regression by party issue
+
+#thoughts: I have to figure out all the 7 unique party issues first. Then I can filter out their data respectively by using filter(), and then run all the cleaning steps same as above again by using for loop.
+
+party_issue <- unique(election$party_issue)[-1]
+
+#data cleaning by party issue ------------------------------------------------------------------------------------
+
+for (issue in party_issue){
+
+#calculate the number of political parties that are founded in a district
+election_lib <- filter(election,party_issue == issue) #filter out data that party issue is liberal
+election_lib <- election_lib[,c('district','party_name','year','party_issue')]
+
+election_lib <- election_lib %>%
+  arrange(district,party_name,year) %>% #reorder
+  group_by(district,party_name) %>%
+  summarise(time = min(year)) %>% #find the earliest year that a party founded in a district
+  group_by(district,time) %>% #find the number of new party in each district-year pair
+  summarise(found_num = n()) #group_by %>% summarise(n()) is equal to count()
+
+#filter out time period between earliest and most recent election year and SPI for those year by district
+rainfall_Q1_lib <- rainfall_norm %>%
+  select(district,time,is_election,SPI) %>%
+  filter(time %in% c(1946:1999))
+
+#join new party data to rainfall data
+rainfall_Q1_lib <- left_join(rainfall_Q1_lib,election_lib,by=c('district','time'))
+rainfall_Q1_lib$found_num <- replace_na(rainfall_Q1_lib$found_num,0) #replace NA with 0
+
+#group each year to election year groups
+rainfall_Q1_lib <- rainfall_Q1_lib %>% mutate(
+  election_group = case_when(
+  time %in% c(1946:1951) ~ 1,
+  time %in% c(1952:1957) ~ 2,
+  time %in% c(1958:1962) ~ 3,
+  time %in% c(1963:1967) ~ 4,
+  time %in% c(1968:1971) ~ 5,
+  time %in% c(1972:1977) ~ 6,
+  time %in% c(1978:1980) ~ 7,
+  time %in% c(1981:1984) ~ 8,
+  time %in% c(1985:1985) ~ 9,
+  time %in% c(1986:1989) ~ 10,
+  time %in% c(1990:1991) ~ 11,
+  time %in% c(1992:1996) ~ 12,
+  time %in% c(1997:1998) ~ 13,
+  time %in% c(1999:1999) ~ 14
+)
+)
+
+#calculate a district and its neighbors' lagged rainfall SPI value
+
+#get a table with both district and its neighbor data, multiple neighbors use average number
+rainfall_Q1_lib_border <- rainfall_Q1_lib[,c('district','time','SPI')]
+rainfall_Q1_lib_border <- left_join(border,rainfall_Q1_lib_border,by=c('focal_district'='district'))
+rainfall_Q1_lib_border <- inner_join(rainfall_Q1_lib_border,rainfall_Q1_lib_border,by=c('district'='focal_district','time'='time'))
+rainfall_Q1_lib_border <- distinct(rainfall_Q1_lib_border,focal_district,district,time,SPI.x,SPI.y)
+rainfall_Q1_lib_border <- rainfall_Q1_lib_border %>% 
+  group_by(focal_district,time) %>%
+  summarise(SPI_nb = mean(SPI.y))
+
+rainfall_Q1_lib <- inner_join(rainfall_Q1_lib,rainfall_Q1_lib_border,by=c('district'='focal_district','time'='time'))
+
+#add a new column to show the number of years in each election period
+rainfall_Q1_lib <- rainfall_Q1_lib %>% mutate(
+  year_num = case_when(
+  election_group == 1 ~ (1951-1946+1),
+  election_group == 2 ~ (1957-1952+1),
+  election_group == 3 ~ (1962-1958+1),
+  election_group == 4 ~ (1967-1963+1),
+  election_group == 5 ~ (1971-1968+1),
+  election_group == 6 ~ (1977-1972+1),
+  election_group == 7 ~ (1980-1978+1),
+  election_group == 8 ~ (1984-1981+1),
+  election_group == 9 ~ (1985-1985+1),
+  election_group == 10 ~ (1989-1986+1),
+  election_group == 11 ~ (1991-1990+1),
+  election_group == 12 ~ (1996-1992+1),
+  election_group == 13 ~ (1998-1997+1),
+  election_group == 14 ~ (1999-1999+1)
+)
+)
+
+#create a new logical column to see whether its a moderate weather (flood or drought) or not
+rainfall_Q1_lib <- rainfall_Q1_lib %>%
+  mutate(is_moderate = ifelse(SPI < -1 | SPI > 1,1,0),
+         is_moderate_nb = ifelse(SPI_nb < -1 | SPI_nb > 1,1,0))
+
+rainfall_Q2_lib <- rainfall_Q1_lib %>%
+  group_by(district,election_group) %>%
+  summarise(moderate_sum = sum(is_moderate),moderate_nb_sum = sum(is_moderate_nb),found_sum = sum(found_num),year_num = mean(year_num))
+
+#create number of moderate weather in a neighbor districts two elections ago
+rainfall_Q2_lib <- rainfall_Q2_lib %>%
+  arrange(district,election_group) %>%
+  group_by(district) %>%
+  mutate(moderate_nb_sum_lag = shift(moderate_nb_sum))
+
+pglm_2A_lib <- pglm(found_sum ~ moderate_sum + moderate_nb_sum_lag + year_num, data = rainfall_Q2_lib, effect =
+"twoways", model = "within", index = "district", family = "poisson")
+
+print(issue)
+print(summary(pglm_2A_lib))
+
+}
+```
+
+Comment: from the different party issue perspective we can find that parties whose issue is liberal, far left, far right, economic_nonfarming and ethnic regional are more likely to be formed when a district's neighbor experiences extreme weather.
+
+# Q3
+```{r,message=FALSE}
+vote <- select(election,district,year,party_name,vote_count)
+
+#create a new column showing each election group
+vote <- vote %>% mutate(
+  election_group = case_when(
+  year %in% c(1946:1951) ~ 1,
+  year %in% c(1952:1957) ~ 2,
+  year %in% c(1958:1962) ~ 3,
+  year %in% c(1963:1967) ~ 4,
+  year %in% c(1968:1971) ~ 5,
+  year %in% c(1972:1977) ~ 6,
+  year %in% c(1978:1980) ~ 7,
+  year %in% c(1981:1984) ~ 8,
+  year %in% c(1985:1985) ~ 9,
+  year %in% c(1986:1989) ~ 10,
+  year %in% c(1990:1991) ~ 11,
+  year %in% c(1992:1996) ~ 12,
+  year %in% c(1997:1998) ~ 13,
+  year %in% c(1999:1999) ~ 14
+)
+)
+
+#calculate the vote share for each party in each district and each year
+vote <- vote %>%
+  group_by(district,election_group) %>%
+  mutate(vote_sum = sum(vote_count)) %>%
+  mutate(vote_share = vote_count / vote_sum)
+
+#calculate HHI(The Herfindahl Index) for each district-election group pair
+vote <- vote %>%
+  group_by(district,election_group) %>%
+  summarise(HHI = sum(vote_share**2))
+vote$HHI <- vote$HHI*100
+
+#combine the vote table with HHI information to the table rainfall_Q2
+rainfall_Q3 <- left_join(rainfall_Q2,vote,by=c('district','election_group'))
+
+#run regression between sum of party founded and number of moderate weather in its own district and its neighbor districts two elections ago
+pglm_3 <- pglm(HHI ~ moderate_sum + moderate_nb_sum_lag + year_num, data = rainfall_Q3, effect =
+"twoways", model = "within", index = "district", family = "poisson")
+summary(pglm_3)
+
+```
+
+Comment:  the regression illustrates that HHI’s concentration or fragmentation of political power in districts is affected by it's neighbors extreme weather number in that election period.
+
+# Q4
+```{r,message=FALSE}
+
+election_sub_Q4 <- election[,c('party_name','district','year')]
+
+#select the founded year of each party in different district 
+election_sub_Q4 <- election_sub_Q4 %>%
+  arrange(district,party_name,year) %>% #reorder
+  group_by(district,party_name) %>%
+  summarise(time = min(year))
+
+#election_sub is the count the number of new founded parties in district-election year pair (regardless whether if it's a new party in India)
+
+#find out the earliest time a party is created (new party in India)
+election_sub_Q4 <- election_sub_Q4 %>%
+  group_by(party_name) %>%
+  filter(time == min(time))
+
+election_sub_Q4 <- election_sub_Q4 %>%
+  group_by(district,time) %>% #find the number of new party in each district-year pair
+  summarise(found_num = n()) #group_by %>% summarise(n()) is equal to count()
+
+#combine the election_sub table and the table above
+election_full <- left_join(election_sub,election_sub_Q4,by=c('district','time'))
+election_full <- rename(election_full,found_num_dis = found_num.x, found_num_nat = found_num.y)
+election_full <- election_full %>%
+  mutate(found_diff = found_num_dis - found_num_nat)
+
+#change time in election_full to election group
+election_full <- election_full %>% mutate(
+  election_group = case_when(
+  time %in% c(1946:1951) ~ 1,
+  time %in% c(1952:1957) ~ 2,
+  time %in% c(1958:1962) ~ 3,
+  time %in% c(1963:1967) ~ 4,
+  time %in% c(1968:1971) ~ 5,
+  time %in% c(1972:1977) ~ 6,
+  time %in% c(1978:1980) ~ 7,
+  time %in% c(1981:1984) ~ 8,
+  time %in% c(1985:1985) ~ 9,
+  time %in% c(1986:1989) ~ 10,
+  time %in% c(1990:1991) ~ 11,
+  time %in% c(1992:1996) ~ 12,
+  time %in% c(1997:1998) ~ 13,
+  time %in% c(1999:1999) ~ 14
+)
+)
+
+#combine the two new table to the table rainfall_Q2
+rainfall_Q4 <- left_join(rainfall_Q2,election_full,by=c('district','election_group'))
+
+#run regression between sum of party founded (have shown in other districts before) and number of moderate weather in its own district and its neighbor districts two elections ago
+pglm_4_A <- pglm(found_num_nat ~ moderate_sum + moderate_nb_sum_lag + year_num, data = rainfall_Q4, effect =
+"twoways", model = "within", index = "district", family = "poisson")
+print('nationally new party')
+print(summary(pglm_4_A))
+
+#run regression between sum of party founded (have not shown in other districts before) and number of moderate weather in its own district and its neighbor districts two elections ago
+pglm_4_B <- pglm(found_diff ~ moderate_sum + moderate_nb_sum_lag + year_num, data = rainfall_Q4, effect =
+"twoways", model = "within", index = "district", family = "poisson")
+print('locally new party')
+print(summary(pglm_4_B))
+
+```
+
+Comment: From the regression above, we can find that the number of extreme weather in a district's neighbor have significant influence on both new political parties being founded in a district that have contested an election in a neighboring district in any previous election period and that have not contested an election in a neighboring district in any previous election period.
+
+
+
+
+
+
+
+
+
+

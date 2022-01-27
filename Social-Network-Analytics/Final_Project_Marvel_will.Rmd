@@ -1,0 +1,233 @@
+---
+title: "SNA_Final_Project_Will"
+author: "Wei (Will) Jiang"
+date: "11/24/2021"
+output: html_document
+---
+
+# Data Cleaning Part
+
+Attention: No need to run the following codes repetitively 
+```{r,message=FALSE}
+# library(data.table)
+# library(tidyverse)
+# 
+# characters <- fread("characters.csv", header=TRUE)
+# charactersToComics <- fread("charactersToComics.csv", header=TRUE)
+# charcters_stats <- fread("charcters_stats.csv", header=TRUE)
+# marvel_characters_info <- fread("marvel_characters_info.csv", header=TRUE)
+# superheroes_power_matrix <- fread("superheroes_power_matrix.csv", header=TRUE)
+# comics <- fread("comics.csv", header=TRUE)
+# 
+# #hero_comics
+# characters$name <- gsub("\\s*\\([^\\)]+\\)","",as.character(characters$name))
+# 
+# hero_comics <- left_join(charactersToComics,characters,by='characterID') %>%
+#   rename(hero = name, heroID = characterID)
+# 
+# comics <- comics %>% select('comicID','title')
+# comics <- comics %>%
+#   separate(title,into = c('title','other'), sep='#') %>%
+#   select(-other)
+# comics$year <- sub('.*\\((.*)\\).*', '\\1', comics$title)
+# comics$year <- as.numeric(comics$year)
+# comics$comicID <- as.numeric(comics$comicID)
+# 
+# hero_comics <- left_join(hero_comics,comics,by='comicID')
+# 
+# #hero_stats
+# hero_stats <- charcters_stats
+# hero_stats <- inner_join(hero_stats,characters,by=c('Name'='name'))
+# hero_stats <- hero_stats[,c(10,1:9)]
+# hero_stats <- rename(hero_stats,heroID = characterID)
+# 
+# #hero_power_matrix
+# hero_power_matrix <- as.data.frame(do.call(cbind,lapply(superheroes_power_matrix[,-1],as.integer)))
+# hero_power_matrix$Name <- superheroes_power_matrix$Name
+# hero_power_matrix <- hero_power_matrix[,c(168,1:167)]
+# 
+# hero_power_matrix <- inner_join(hero_power_matrix,characters,by = c('Name'='name'))
+# hero_power_matrix <- hero_power_matrix[,c(169,1:168)]
+# hero_power_matrix <- rename(hero_power_matrix,heroID = characterID)
+# 
+# write.csv(hero_comics,"hero_comics.csv")
+# write.csv(hero_stats,"hero_stats.csv")
+# write.csv(hero_power_matrix,"hero_power_matrixs.csv")
+```
+
+# Similarity Analysis Part
+
+## Set up
+```{r,message=FALSE}
+library(data.table)
+library(tidyverse)
+library(proxy)
+
+hero_comics <- fread("hero_comics_new.csv", header=TRUE)
+hero_power_matrixs <- fread("hero_power_matrixs_new.csv", header=TRUE)
+hero_stats <- fread("hero_stats_new.csv", header=TRUE)
+```
+
+## Similarity Between Heroes by Power Types
+
+Question: 
+Different heroes have different power types, such as stealth, flight, size changing. There are 167 super power types in the table, so we want to explore which superheroes have the most similar power as others and who are not.
+
+Process:
+By exploring this question, we started by creating affiliation matrix and then calculate distance between superheroes by using Jaccard similarity. Then we transfer the similarity matrix to a pairwise data frame and get the TOP ordinary and unique heroes.
+
+```{r,message=FALSE}
+# generate affiliation matrix
+hero_power_sub <- hero_power_matrixs[,-1]
+hero_power_sub <- distinct(hero_power_sub,Name,.keep_all=TRUE)
+hero_power_sub_2 <- as.data.frame(apply(hero_power_sub[,2:168], 2, as.numeric)) #transfer 0,1 to numeric 
+hero_power_aff_mat <- cbind(hero_power_sub_2,hero_power_sub$Name)
+colnames(hero_power_aff_mat)[168] <- 'Name'
+rownames(hero_power_aff_mat) <- hero_power_aff_mat$Name #put hero Name to index
+hero_power_aff_mat <- hero_power_aff_mat[,1:167]
+rm(hero_power_sub,hero_power_sub_2)
+
+# calculate Jaccard similarity based on overlap powers
+hero_power_jac <- dist(hero_power_aff_mat,method='jaccard',by_rows = TRUE)
+hero_power_jac <- as.matrix(hero_power_jac) #transfer to distance matrix
+
+# find the TOP heroes with the most unique powers
+hero_power_jac_avg <- as.data.frame(apply(hero_power_jac,1,FUN = mean))
+colnames(hero_power_jac_avg)[1] = 'power_similarity'
+
+hero_power_jac_avg %>% 
+  arrange(power_similarity) %>% 
+  slice_head(n=10)
+
+# find the TOP heroes with the most similar powers as others
+hero_power_jac_avg %>% 
+  arrange(desc(power_similarity)) %>% 
+  slice_head(n=10)
+
+# transfer Jaccard distance matrix to pairwise list (each two heroes have a similarity)
+hero_power_similar <- data.frame(hero_1=colnames(hero_power_jac)[col(hero_power_jac)], 
+                                 hero_2=rownames(hero_power_jac)[row(hero_power_jac)], 
+                                 similarity=c(hero_power_jac))
+
+hero_power_similar <- hero_power_similar %>%
+  filter(hero_1 != hero_2)
+
+hero_power_similar
+```
+
+Conclusion: From the result above, we can find that Namorita, Annihilus, Warlock, Battlestar and Captain Britain are the most unique superheros. On the other hand, Leech, Cerebra, Monica Dawson, Moses Magnum and Billy Kincaid are the TOP 5 heroes who have most similar power types with others.
+
+
+## Similarity Between Heroes by Strength
+
+Question: 
+Different heroes have different strengths, and there are six type of strengths in the table, such as intelligence, strength, speed, durability, power and combat. There is also a column sums all the points of each hero. Like the question above, we want to explore which hero pairs have most strength similarities as others.
+
+Process:
+Before exploring this question, we get the most powerful heroes by ranking their total strength scores. Then we started by creating affiliation matrix and then calculate distance between superheroes by using Euclidean similarity since there are weights for different strength types. In order to make the result more clear, we re-scale the result by using Min-Max sacling method. Then we transfer the similarity matrix to a pairwise data frame and get the TOP common and unique heroes.
+
+```{r,message=FALSE}
+# set index as hero name
+hero_strength <- as.data.frame(hero_stats[,c(-1,-3)])
+hero_strength <- distinct(hero_strength,Name,.keep_all=TRUE)
+rownames(hero_strength) <- hero_strength$Name
+hero_strength <- hero_strength[,-1]
+
+# get the most powerful heroes by ranking total strength scores
+hero_strength %>% 
+  arrange(desc(Total)) %>% 
+  slice_head(n=10)
+
+# calculate Euclidean similarity based on strength of different aspects
+hero_strength_euc <- dist(hero_strength,method='Euclidean',by_rows = TRUE)
+hero_strength_euc <- as.matrix(hero_strength_euc) #transfer to distance matrix
+
+# scale the result by using Min-Max Scaling
+hero_strength_euc <- apply(hero_strength_euc, MARGIN = 2, 
+                           FUN = function(x) (x - min(hero_strength_euc))/diff(range(hero_strength_euc)))
+
+# find the TOP heroes with the most unique strength
+hero_strength_euc_avg <- as.data.frame(apply(hero_strength_euc,1,FUN = mean))
+colnames(hero_strength_euc_avg)[1] = 'strength_similarity'
+
+hero_strength_euc_avg %>% 
+  arrange(strength_similarity) %>% 
+  slice_head(n=10)
+
+# find the TOP heroes with the most similar powers as others
+hero_strength_euc_avg %>% 
+  arrange(desc(strength_similarity)) %>% 
+  slice_head(n=10)
+
+# transfer Euclidean distance matrix to pairwise list (each two heroes have a similarity)
+hero_strength_similar <- data.frame(hero_1=colnames(hero_strength_euc)[col(hero_strength_euc)], 
+                                 hero_2=rownames(hero_strength_euc)[row(hero_strength_euc)], 
+                                 similarity=c(hero_strength_euc))
+
+hero_strength_similar <- hero_strength_similar %>%
+  filter(hero_1 != hero_2)
+
+hero_strength_similar
+```
+
+Conclusion: From the result above, we can find that Martian Manhunter, General Zod, Superboy-Prime, Superman and Amazo are the most powerful superheros. On the other hand, Martian Manhunter, Superboy-Prime, Superman, General Zod and Amazo are the TOP 5 heroes who have most similar strength with others. We can find they are all powerful heroes. This may be explained by the fact that the most powerful heroes always have high points in every strength types so they tend to be similar as other heroes. On the other hand, Silverclaw, Snowbird, Triplicate Girl, 3-D Man and DL Hawkins are very different from other heroes regarding strength.
+
+## Co-occurrence Between Heroes
+
+Question: 
+Different heroes tends to occur in a same comic. When they occurrence in the same comics very frequently, there might be some relationships between those heroes. Here we want to find hero pairs with highest co-occurrence times in all comics.
+
+Process:
+By exploring this question, we simply self-join the tables regarding hero names and comic id and find the pairs by re-ordering the joint table.
+
+```{r,message=FALSE}
+# calculate the total co-occurrence time between two heroes in comics
+hero_comics_sub <- hero_comics[,c(1,3)]
+
+hero_cooccur <- hero_comics_sub %>% 
+  inner_join(hero_comics_sub,by=c('comicID' = 'comicID'),suffix=c('_1','_2')) %>% 
+  filter(hero_1 != hero_2)
+
+hero_cooccur <- hero_cooccur %>% group_by(hero_1,hero_2) %>% 
+  summarise(cooccur_times = n()) %>% 
+  arrange(desc(cooccur_times))
+
+hero_cooccur <- hero_cooccur[seq(1, nrow(hero_cooccur), 2), ] #delete duplicate combinations and keep unique ones
+hero_cooccur_all <- hero_cooccur #without deleting combinations
+
+# get the TOP 10 hero pairs who co-occurrence most frequently in comics
+head(hero_cooccur,10)
+```
+
+Conclusion: From the results, we can find that Captain America and Iron Man are the TOP 1 hero pair with highest co-occurrence times in all comics.
+
+## Relationship Between Co-occurrence Times and Power & Strength Similarity Between Heroes
+
+Question: 
+We also want to figure out if there is a clear relationship between similarity of heroes and the possibility that they tend to show in a same comic or not.
+
+Process:
+By exploring this question, we combined strength similarity, power similarity and co-occurrence table together, and then we run a regression regarding co-occurrence times and the two similarities.
+
+```{r,message=FALSE}
+#re-scale co-occurrence times by using Min-Max Scaling
+# cooccur_max <- max(hero_cooccur_all$cooccur_times)
+# cooccur_min <- min(hero_cooccur_all$cooccur_times)
+# hero_cooccur_all <- hero_cooccur_all %>% 
+#   mutate(cooccur_times_scale = (cooccur_times - cooccur_min)/(cooccur_max-cooccur_min))
+
+# combine both strength similar and power similar
+hero_all_similar <- inner_join(hero_strength_similar,hero_power_similar,by=c('hero_1','hero_2'),suffix=c('_strength','_power'))
+
+# combine similarity and co-occurrence table
+cooccur_similar <- hero_cooccur_all %>% 
+  inner_join(hero_all_similar,by=c('hero_1','hero_2')) %>% 
+  distinct(cooccur_times,similarity_strength,similarity_power,.keep_all = TRUE)
+
+# run regression
+out_cooccur_similar <- lm(cooccur_times ~ similarity_strength + similarity_power, data = cooccur_similar)
+summary(out_cooccur_similar)
+```
+
+Conclusion: From the result above, we can find that both strength and power similarity are statistially significant and they are negatively related to the co-occurrence. In other words, the similar two heroes is, the less likely they co-occurrence in the same comic. We can make a guess here: if a comic is welcomed by audience, then it is as successful comic. However, different audience have different tastes, in order to coutering different audience, Marvel tend not to put too many similar heroes (including similar super power type and similar strength) together since it may cause aesthetic fatigue.
+

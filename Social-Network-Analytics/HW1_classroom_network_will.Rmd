@@ -1,0 +1,212 @@
+---
+title: "HW1_Wei(Will)Jiang"
+author: "Wei (Will) Jiang"
+date: "10/28/2021"
+output: html_document
+---
+
+# Set up
+```{r}
+library(data.table)
+all_edges = fread("C:/Users/Will Jiang/Desktop/Emory Desktop/Network/HW/HW1/social_and_task_network.csv", head = TRUE)
+library(igraph)
+```
+
+# Q1: Centrality
+
+## Q1(A): calculate centrality
+```{r,warning=FALSE}
+nonzero_edges <- all_edges[social_tie > 0 | task_tie > 0] #removing edges with both social and task weight = 0
+all_network <- graph.data.frame(nonzero_edges,directed = FALSE) #no direction needed
+
+#social ties
+social <- delete.edges(all_network, E(all_network)[E(all_network)$social_tie==0]) #left only with social ties
+social <- delete.vertices(social, V(social)[degree(social)==0]) #remove the social isolates
+
+#calculate different centralities
+social_indegree <- degree(social, mode='in',normalized = TRUE)
+social_outdegree <- degree(social, mode='out',normalized = TRUE)
+social_closeness <- closeness(social, weights=E(social)$social_tie, normalized = TRUE)
+social_betweenness <- betweenness(social, weights=E(social)$social_tie, normalized = TRUE)
+social_pagerank <- page_rank(social,weights=E(social)$social_tie)
+
+#show centralities together
+social_centralities <- cbind(social_indegree,social_outdegree,social_closeness,social_betweenness,social_pagerank$vector)
+colnames(social_centralities) <- c('indegree','outdegree','closeness','betweenness','page rank')
+social_centralities
+```
+```{r,echo=FALSE,warning=FALSE}
+#task ties
+task <- delete.edges(all_network, E(all_network)[E(all_network)$task_tie==0]) #left only with task ties
+task <- delete.vertices(task, V(task)[degree(task)==0]) #remove the task isolates
+
+#calculate different centralities
+task_indegree <- degree(task, mode='in',normalized = TRUE)
+task_outdegree <- degree(task, mode='out',normalized = TRUE)
+task_closeness <- closeness(task, weights=E(task)$task_tie, normalized = TRUE)
+task_betweenness <- betweenness(task, weights=E(task)$task_tie, normalized = TRUE)
+task_pagerank <- page_rank(task,weights=E(task)$task_tie)
+
+#show centralities together
+task_centralities <- cbind(task_indegree,task_outdegree,task_closeness,task_betweenness,task_pagerank$vector)
+colnames(task_centralities) <- c('indegree','outdegree','closeness','betweenness','page rank')
+task_centralities
+```
+
+## Q1(B): correlations among centrailities
+```{r}
+rownames(social_centralities)
+rownames(task_centralities)
+both_cen <- Reduce(intersect,list(rownames(social_centralities),rownames(task_centralities))) #get people in both social and task centralities
+social_centralities_sub <- social_centralities[both_cen,]
+task_centralities_sub <- task_centralities[both_cen,]
+cor(social_centralities_sub, task_centralities_sub) #calculate correlation matrix
+```
+Comment:
+(1) social network betweenness centrality is closely correlated with task network indegree, outdegree, betweenness and page rank centralities. For instance, people who have high betweenness in social network may also have high indegree, outdegree, betweenness and page rank in the task network. This may because people with high betweenness is a bridge of unrelated people, they tend to find this brokerage person for social and task information and cooperation.
+(2) social network indegree and outdegree centrality is also correlated with indegree and outdegree of task network.
+(3) social network closeness centrality is correlated with that of task network.People who tend to be the center of social network may also have high posibility to be the task center since they may communicate with each other about courses when they hanging out together or after class.
+
+# Q2: Strong Triadic Closure
+Assumption: if there is at least a strong tie between two nodes (no matter it's social or task network), then they have strong tie.
+
+## Q2(A) plot inviolation Strong Triadic Closure
+```{r}
+social_weak <- which(E(all_network)$social_tie <= mean(E(all_network)$social_tie))
+task_weak <- which(E(all_network)$task_tie <= mean(E(all_network)$task_tie))
+both_weak <- Reduce(intersect,list(social_weak,task_weak)) #select edge if both social tie and task tie are weak
+strong_network <- delete.edges(all_network,both_weak) #select edge as long as strong ties exist
+plot.igraph(strong_network,vertex.label=NA,layout=layout.fruchterman.reingold,vertex.label.color="black",edge.color="black",vertex.size = 12, edge.arrow.size=.3,edge.curved=FALSE)
+```
+Comment: as we can find in the plot, some nodes in the network do not satisfy the Strong Triadic Closure.
+
+## Q2(B): calculate number of inviolation Strong Triadic Closure
+```{r}
+#generate a strong matrix with complete rows and columns (1:22)
+strong_network <- simplify(strong_network) #delete duplicates and loops
+strong_network_matrix <- as_adjacency_matrix(strong_network) #get matrix with only strong ties between nodes
+strong_network_matrix <- rbind(strong_network_matrix[1:2,],c(rep(0,21)),strong_network_matrix[-(1:2),]) #add a new row with all 0
+rownames(strong_network_matrix) <- seq(1,22) #rename the row names
+strong_network_matrix <- cbind(strong_network_matrix[,1:2],c(rep(0,22)),strong_network_matrix[,-(1:2)]) #add a new row with all 0
+colnames(strong_network_matrix) <- seq(1,22) #rename the column names
+
+#for every node: get nodes who are connected with it by strong ties, and generate the possible combinations of those nodes
+more_than_one_strong <- which(apply(strong_network_matrix,1,sum) >= 2) #select only rows  with >= 2 strong ties
+all_combn <- matrix(ncol=2)
+for (i in more_than_one_strong) {
+  new_combn <- t(combn(which(strong_network_matrix[i,]==1),2))
+  all_combn <- rbind(all_combn,new_combn)
+}
+colnames(all_combn) <- c('y1','y2')
+
+#according to Strong Triadic Closure, those nodes generated above should have ties, so I compare them with all relationships, if FALSE then it violates the rule
+all_relations <- as.matrix(nonzero_edges[,1:2])
+all_relations <- transform(all_relations,all_relations_1=interaction(ego,alter,sep='_')) 
+all_combn <- transform(all_combn,all_combn=interaction(y1,y2,sep='_'))
+
+sum(all_relations$all_relations %in% all_combn$all_combn == FALSE)/2 #count the number of inviolation
+```
+Comments: There are 28 ties that are inviolation of Strong Triadic Closure.
+
+# Q3: Edge-level Betweenness
+
+## Q3(A): Edge-level betweenness
+```{r}
+social_edge_betweenness <- edge_betweenness(social,e = E(social),weights=E(social)$social_tie)
+task_edge_betweenness <- edge_betweenness(task,e = E(task),weights=E(task)$task_tie)
+```
+
+## Q3(B): Strong tie or not
+```{r}
+social_strong_edge_judge <- E(social)$social_tie > mean(E(social)$social_tie) #boolean, edge is strong(1) or weak(0)
+cbind(social_edge_betweenness,social_strong_edge_judge) #see edge betweenness and whether they are strong or weak
+
+task_strong_edge_judge <- E(task)$task_tie > mean(E(task)$task_tie) #boolean, edge is strong(1) or weak(0)
+cbind(task_edge_betweenness,task_strong_edge_judge) #see edge betweenness and whether they are strong or weak
+```
+Comment: From the combined result we can find that edges with high betweenness tend to be weak ties. This result makes sense given the shape of the networks.
+
+# Q4: Pairs of No Walks
+
+## (1) Method 1
+Use distances() to calculate there are 38 pairs of nodes do not have walks between one another.
+```{r}
+all_network_dis <- distances(all_network)
+sum(is.infinite(all_network_dis))/2
+```
+
+## (2) Method 2
+Idea: Calculate number of 1-21 walks between nodes, and judge whether there is no such walk in every matrix and then add them together,if the result is 21, it means there are no walks between nodes in every walk matrix, finally I get the number and devided by 2 and get pairs of no walks. The result shows that there are 38 pairs of nodes do not have walks between one another as well.
+```{r}
+all_network <- simplify(all_network)
+all_network_matrix <- as_adjacency_matrix(all_network)
+all_network_matrix_2 = all_network_matrix %*% all_network_matrix
+all_network_matrix_3 = all_network_matrix_2 %*% all_network_matrix
+all_network_matrix_4 = all_network_matrix_3 %*% all_network_matrix
+all_network_matrix_5 = all_network_matrix_4 %*% all_network_matrix
+all_network_matrix_6 = all_network_matrix_5 %*% all_network_matrix
+all_network_matrix_7 = all_network_matrix_6 %*% all_network_matrix
+all_network_matrix_8 = all_network_matrix_7 %*% all_network_matrix
+all_network_matrix_9 = all_network_matrix_8 %*% all_network_matrix
+all_network_matrix_10 = all_network_matrix_9 %*% all_network_matrix
+all_network_matrix_11 = all_network_matrix_10 %*% all_network_matrix
+all_network_matrix_12 = all_network_matrix_11 %*% all_network_matrix
+all_network_matrix_13 = all_network_matrix_12 %*% all_network_matrix
+all_network_matrix_14 = all_network_matrix_13 %*% all_network_matrix
+all_network_matrix_15 = all_network_matrix_14 %*% all_network_matrix
+all_network_matrix_16 = all_network_matrix_15 %*% all_network_matrix
+all_network_matrix_17 = all_network_matrix_16 %*% all_network_matrix
+all_network_matrix_18 = all_network_matrix_17 %*% all_network_matrix
+all_network_matrix_19 = all_network_matrix_18 %*% all_network_matrix
+all_network_matrix_20 = all_network_matrix_19 %*% all_network_matrix
+all_network_matrix_21 = all_network_matrix_20 %*% all_network_matrix
+
+jud_matrix_1 <- all_network_matrix==0
+jud_matrix_2 <- all_network_matrix_2==0
+jud_matrix_3 <- all_network_matrix_3==0
+jud_matrix_4 <- all_network_matrix_4==0
+jud_matrix_5 <- all_network_matrix_5==0
+jud_matrix_6 <- all_network_matrix_6==0
+jud_matrix_7 <- all_network_matrix_7==0
+jud_matrix_8 <- all_network_matrix_8==0
+jud_matrix_9 <- all_network_matrix_9==0
+jud_matrix_10 <- all_network_matrix_10==0
+jud_matrix_11 <- all_network_matrix_11==0
+jud_matrix_12 <- all_network_matrix_12==0
+jud_matrix_13 <- all_network_matrix_13==0
+jud_matrix_14 <- all_network_matrix_14==0
+jud_matrix_15 <- all_network_matrix_15==0
+jud_matrix_16 <- all_network_matrix_16==0
+jud_matrix_17 <- all_network_matrix_17==0
+jud_matrix_18 <- all_network_matrix_18==0
+jud_matrix_19 <- all_network_matrix_19==0
+jud_matrix_20 <- all_network_matrix_20==0
+jud_matrix_21 <- all_network_matrix_21==0
+
+sum((jud_matrix_1+jud_matrix_2+jud_matrix_3+jud_matrix_4+jud_matrix_5+
+  jud_matrix_6+jud_matrix_7+jud_matrix_8+jud_matrix_9+jud_matrix_10+
+  jud_matrix_11+jud_matrix_12+jud_matrix_13+jud_matrix_14+jud_matrix_15+
+  jud_matrix_16+jud_matrix_17+jud_matrix_18+jud_matrix_19+jud_matrix_20+jud_matrix_21) == 21)/2
+```
+
+# Q5: network-level measure
+
+## (1) Network-level measure of degree centrality = 1
+```{r}
+st_maxtrix <- matrix(c(0,1,1,1,1,0,0,0,1,0,0,0,1,0,0,0), nrow=4, ncol=4)
+st = graph.adjacency(st_maxtrix,'undirected')
+plot.igraph(st,vertex.label=NA,layout=layout.fruchterman.reingold,vertex.label.color="black",edge.color="black",vertex.size = 12, edge.arrow.size=.3,edge.curved=FALSE)
+st_closeness <- closeness(st) #0.3333333 0.2000000 0.2000000 0.2000000
+st_betweenness <- betweenness(st) #3 0 0 0
+```
+Comment: as we can calculate from the result, this relationship is not true for these networks for closeness centrality and betweenness centrality
+
+## (2)Network-level measure of degree centrality = 0
+```{r}
+tri_maxtrix <- matrix(c(0,1,1,1,0,1,1,1,0), nrow=3, ncol=3)
+tri = graph.adjacency(tri_maxtrix,'undirected')
+plot.igraph(tri,vertex.label=NA,layout=layout.fruchterman.reingold,vertex.label.color="black",edge.color="black",vertex.size = 12, edge.arrow.size=.3,edge.curved=FALSE)
+tri_closeness <- closeness(tri) #0.5 0.5 0.5
+tri_betweenness <- betweenness(tri) #0 0 0
+```
+Comment: as we can calculate from the result, this relationship hold true for these networks for closeness centrality and betweenness centrality.

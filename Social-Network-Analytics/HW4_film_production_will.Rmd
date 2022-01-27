@@ -1,0 +1,462 @@
+---
+title: "HW4_Wei(Will)Jiang"
+author: "Wei (Will) Jiang"
+date: "11/18/2021"
+output: html_document
+---
+# Set up
+
+```{r,message=FALSE}
+library(igraph)
+library(data.table)
+library(tidyverse)
+library(zoo)
+library(proxy)
+library(MASS)
+prod_fm <- fread("producers_and_films.csv", header=TRUE)
+rev <- fread("box_office_revenues.csv", header=TRUE)
+key <- fread("film_keywords.csv", header=TRUE)
+sub <- fread("production_subsidiaries.csv", header=TRUE)
+```
+
+# Data Preparation
+
+### Calculate Coreness and Find Generalist / Specialist
+```{r,message=FALSE}
+
+#select only us data
+prod_fm <- filter(prod_fm,country == 'us')
+
+#see total number of producers
+length(unique(prod_fm$pcindex))
+
+#create empty dataframe
+core_year <- data.frame(pcindex=character(),coreness=double(),year=integer())
+
+#calculate every year's eigenvector centrality
+
+for (n in 1985:2019){ 
+
+#create co-affiliation matrix
+prod_fm_aff_mat <- prod_fm %>%
+  filter(year == n) 
+prod_fm_aff_mat <- prod_fm_aff_mat[,c('pcindex','pindex')]
+
+prod_fm_aff_mat <- as.matrix(as.data.frame.matrix(table(prod_fm_aff_mat))) #create affiliation matrix
+prod_fm_coaff_mat <- prod_fm_aff_mat %*% t(prod_fm_aff_mat) #create co-affiliation matrix
+
+#create adjacency matrix
+diag(prod_fm_coaff_mat) <- 0 # change all diagonal = 0
+prod_fm_coaff_mat[prod_fm_coaff_mat > 0] = 1#change other values = 1
+prod_fm_adj <- graph.adjacency(prod_fm_coaff_mat)
+
+#calculate coreness (eigenvector centrality)
+core <- as.data.frame(eigen_centrality(prod_fm_adj, directed = FALSE)$vector)
+
+#make result data frame for combining
+core <- as.data.frame(core)
+core <- cbind(pcindex = rownames(core), core)
+rownames(core) <- 1:nrow(core)
+core$year = n
+colnames(core) <- c('pcindex','coreness','year')
+
+#union data to the empty dataframe created above
+core_year <- bind_rows(core_year,core)
+
+}
+
+rm(core)
+rm(prod_fm_adj)
+rm(prod_fm_aff_mat)
+rm(prod_fm_coaff_mat)
+
+#fill non exist values between years by 0 for different producers
+core_year <- core_year %>% 
+  group_by(pcindex) %>% 
+  complete(year = min(year):max(year), fill = list(coreness = 0)) %>%
+  arrange(pcindex,year)
+
+#calculating the rolling average of years by different producer
+core_year <- core_year %>%
+  mutate(rollavg= lag(rollapplyr(coreness,10, mean, partial = TRUE)))
+core_year$rollavg <- replace_na(core_year$rollavg,0)
+
+#calculate the threshold of top quartile
+threshold =quantile(core_year$rollavg,0.75)
+
+#determine producers are generalist(1) or specialist(0)
+core_year <- core_year %>%
+  mutate(is_general = case_when(rollavg >= threshold ~ '1',
+                          rollavg < threshold ~ '0'))
+
+```
+
+# Q1
+
+## Q1(A)
+
+### Classify each film by the type of collaboration that it represents
+```{r}
+#generate new column shows if a film is collaborative(1) or solo(0)
+prod_fm_sub <- prod_fm[,c('pcindex','pindex','year')]
+prod_fm_sub <- left_join(prod_fm_sub,core_year[,c('pcindex','year','is_general')],by=c('pcindex','year'))
+
+prod_fm_sub_2 <- prod_fm_sub %>%
+  group_by(pindex) %>% 
+  count(pindex) %>%
+  mutate(is_col= case_when(n == 1 ~ 0,
+                        n > 1 ~ 1))
+
+prod_fm_full <- left_join(prod_fm_sub,prod_fm_sub_2[,c('pindex','is_col')],by='pindex')
+
+#determine the type of collaboration of films
+#1: Peripheral solo productions: films made by a single specialist
+#2: Central solo productions: films made by a single generalist
+#3: Central co-productions: films made by a group of multiple generalists
+#4: Peripheral co-productions: films made by a group of multiple specialists
+#5: Hybrid co-productions: films made by a group of generalists and specialists
+
+prod_fm_full <- prod_fm_full %>%
+  group_by(pindex) %>%
+  mutate(col_type = case_when(is_general == 0 & is_col == 0 ~ 1,
+                              is_general == 1 & is_col == 0 ~ 2,
+                              n_distinct(is_general) == 1 & is_general == 1 & is_col == 1 ~ 3,
+                              n_distinct(is_general) == 1 & is_general == 0 & is_col == 1 ~ 4,
+                              TRUE ~ 5))
+
+rm(prod_fm_sub)
+rm(prod_fm_sub_2)
+```
+
+### Calculate the number of new keywords by Collaboration Types
+```{r,message=FALSE}
+#join keywords data to the prod_fm table in order to filter out US data
+year <- distinct(prod_fm_full[,c('pindex','year','col_type')])
+prod_fm_key <- distinct(left_join(year,key,by='pindex'))
+
+#get the min year of each key words appears
+prod_fm_key <- prod_fm_key %>%
+  group_by(keyword) %>%
+  mutate(key_first_year = min(year)) %>% 
+  ungroup()
+
+#determine if the keyword is innovative or not within 3 years after it first appears
+prod_fm_key <- prod_fm_key %>% 
+  mutate(new_key = ifelse(prod_fm_key$year - prod_fm_key$key_first_year <= 2,1,0))
+
+#plot number of new keywords each year by five collaboration types
+plot_Q1_A <- prod_fm_key %>% 
+  group_by(year,col_type) %>% 
+  summarise(new_key = sum(new_key))
+
+ggplot() +
+  geom_point(data = plot_Q1_A,aes(x=year,y=new_key,color=factor(col_type))) +
+  geom_line(data = plot_Q1_A,aes(x=year,y=new_key,color=factor(col_type))) +
+  scale_color_discrete(name = "Collaboration Types", 
+                       labels = c("Peripheral solo productions", "Central solo productions",
+                                  "Central co-productions",
+                                  "Peripheral co-productions","Hybrid co-productions")) +
+  labs(x='Year',y='Number of New Key Words', 
+       title = 'Total Number of New Key Words by Collaboration Types') +
+  scale_x_continuous(breaks=seq(1985, 2019, 5)) +
+  theme_light()
+
+```
+
+### Calculate and Plot the number of new combinations of existing keywords by Collaboration Types
+```{r,message=FALSE}
+#filter out all old keywords
+prod_fm_key_old <- prod_fm_key %>%
+  filter(new_key == 0) %>%
+  dplyr::select(pindex,year,col_type,keyword) %>%
+  drop_na(keyword)
+
+#find all combinations of old keywords by movie
+prod_fm_key_old <- prod_fm_key_old %>% 
+  inner_join(prod_fm_key_old,by='pindex') %>%
+  dplyr::select(pindex,year.x,col_type.x,keyword.x,keyword.y) %>% 
+  filter(keyword.x != keyword.y) %>%
+  rename(year = year.x,col_type = col_type.x) %>%
+  unite(key_pairs,keyword.x, keyword.y, sep = "_", remove = TRUE)
+
+#get the min year of each key pairs appears
+prod_fm_key_old <- prod_fm_key_old %>%
+  group_by(key_pairs) %>%
+  mutate(key_pairs_first_year = min(year)) %>% 
+  ungroup()
+
+#determine if the key pairs is innovative or not within 3 years after it first appears
+prod_fm_key_old <- prod_fm_key_old %>% 
+  mutate(new_key_pairs = ifelse(prod_fm_key_old$year - prod_fm_key_old$key_pairs_first_year <= 2,1,0))
+
+#plot number of new keywords each year by five collaboration types
+plot_Q1_AA <- prod_fm_key_old %>% 
+  group_by(year,col_type) %>% 
+  summarise(new_key_pairs = sum(new_key_pairs)/2) #divide by 2 since there are repeat count when joining
+
+ggplot() +
+  geom_point(data = plot_Q1_AA,aes(x=year,y=new_key_pairs,color=factor(col_type))) +
+  geom_line(data = plot_Q1_AA,aes(x=year,y=new_key_pairs,color=factor(col_type))) +
+  scale_color_discrete(name = "Collaboration Types", 
+                       labels = c("Peripheral solo productions", "Central solo productions",
+                                  "Central co-productions",
+                                  "Peripheral co-productions","Hybrid co-productions")) +
+  labs(x='Year',y='Number of New Key Words', 
+       title = 'Total Number of New Key Words Pairs by Collaboration Types') +
+  scale_x_continuous(breaks=seq(1985, 2019, 5)) +
+  theme_light()
+
+```
+
+## Q1(B)
+
+### Run regression for new key words prediction for a year
+```{r,message=FALSE}
+
+#filter out data regarding the three types of collaboration types
+col_key <- prod_fm_key %>% 
+  group_by(pindex,year,col_type) %>% 
+  summarise(new_key = sum(new_key))
+
+#transfer three collaboration types to three columns of dummy variables
+col_key <- col_key %>% 
+  mutate(central_col = case_when(col_type == 3 ~ 1, TRUE ~ 0),
+         peripheral_col = case_when(col_type == 4 ~ 1, TRUE ~ 0),
+         hybrid_col = case_when(col_type == 5 ~ 1, TRUE ~ 0)) %>% 
+  dplyr::select(-col_type)
+
+#add a column: total box office revenue of a film
+col_key <- left_join(col_key,rev[,c('pindex','total_box')],by='pindex')
+
+#add a column: whether or not the producer is a subsidiary when making a film
+subsidy <- left_join(prod_fm[,c('pindex','year','pcindex')],sub,by='pcindex') %>% 
+  mutate(is_subsidy = ifelse(year >= first_year & year <= last_year,1,0))
+
+subsidy <- subsidy %>% 
+  mutate(is_subsidy = replace(is_subsidy,is.na(subsidy$is_subsidy),0)) %>% 
+  dplyr::select(pcindex,pindex,is_subsidy) %>%
+  distinct()
+
+col_key <- left_join(col_key,subsidy,by='pindex')
+
+#add years the producer has been in operation
+operation <- prod_fm%>% 
+  dplyr::select(pcindex,pindex,year) %>%
+  group_by(pcindex) %>% 
+  mutate(first_year = min(year)) %>%
+  ungroup() %>% 
+  mutate(ope_year = year - first_year + 1)
+
+col_key <- left_join(col_key,operation[,c('pcindex','pindex','ope_year')],by=c('pindex','pcindex'))
+
+#add offset: total films that have keywords the producer made that year
+have_key <- distinct(key,pindex)
+offset <- prod_fm %>% 
+  dplyr::select(pindex,year,pcindex) %>% 
+  right_join(have_key,by='pindex') %>% 
+  group_by(year,pcindex) %>% 
+  summarise(fm_cnt = n_distinct(pindex))
+
+col_key <- left_join(col_key,offset,by=c('year','pcindex'))
+
+prod_key <- prod_fm_key %>% dplyr::select(pindex,keyword,year) %>% 
+  left_join(prod_fm[,c('pindex','pcindex')],by='pindex') %>% 
+  dplyr::select(pcindex,keyword,year)
+
+#add two coordinates below (can use saved rdata below directly)-----------------------------------------
+# coord <- data.frame(pcindex=character(),year=integer(),coordinate_1=double(),coordinate_2=double())
+# 
+# for (n in 1987:2019){
+# 
+# #generate affiliation matrix
+# 
+# prod_key_aff_mat <- prod_key %>%
+#   filter(year == n | year == n-1 | year == n-2) 
+# prod_key_aff_mat <- prod_key_aff_mat[,c('pcindex','keyword')]
+# 
+# prod_key_aff_mat <- as.matrix(as.data.frame.matrix(table(prod_key_aff_mat)))
+# 
+# #calculate Jaccard similarity distance regarding producers and key words in recent three years
+# prod_key_jac <- dist(prod_key_aff_mat,method='jaccard',by_rows = TRUE)
+# 
+# #perform the 2D multidimensional scaling
+# prod_key_jac <- cmdscale(prod_key_jac, k=2)
+# 
+# #get coordinate 1 and 2
+# prod_key_jac <- cbind(pcindex = rownames(prod_key_jac), prod_key_jac)
+# rownames(prod_key_jac) <- 1:nrow(prod_key_jac)
+# prod_key_jac <- as.data.table(prod_key_jac)
+# 
+# prod_key_jac <- prod_key_jac %>% 
+#   rename(coordinate_1 = V2, coordinate_2 = V3) %>% 
+#   mutate(year = n) %>%
+#   dplyr::select(pcindex,year,coordinate_1,coordinate_2)
+# prod_key_jac$coordinate_1 <- as.double(prod_key_jac$coordinate_1)
+# prod_key_jac$coordinate_2 <- as.double(prod_key_jac$coordinate_2)
+#   
+# coord <- bind_rows(coord,prod_key_jac)
+# 
+# }
+#end of the loop-------------------------------------------------------------------
+
+#since this for loop runs so so so long time, I save it so can reuse next time
+#save(coord, file = "coord.RData")
+load("coord.RData")
+
+#add coordinate to the regression data
+col_key <- left_join(col_key,coord,by=c('pcindex','year'))
+
+#run regression
+out_Q1_A <- glm.nb(new_key ~ central_col + peripheral_col + hybrid_col + coordinate_1 + coordinate_2 + total_box + ope_year + is_subsidy + factor(year), data = col_key, offset(fm_cnt))
+summary(out_Q1_A)
+
+```
+
+Comment: From the regression result above we can find that all the three kinds of collaborations have statistically significant influence on number of new key words introduced. However, only central and hybrid collaborations have positive effect on it. In other words, central and hybrid collaborations are more likely to introduce new key words. It's worth to mention that central collaborations are even more beneficial to the generation of new key words.
+
+### Run regression for new key words pairs prediction for a year
+```{r,message=FALSE}
+#add new key pairs to the table
+key_paris <- prod_fm_key_old %>% 
+  dplyr::select(pindex,year,new_key_pairs) %>% 
+  group_by(pindex,year) %>% 
+  summarise(new_key_pairs = sum(new_key_pairs))
+
+col_key <- col_key %>% left_join(key_paris,by=c('pindex','year'))
+
+#run regression
+out_Q1_A2 <- glm.nb(new_key_pairs ~ central_col + peripheral_col + hybrid_col + coordinate_1 + coordinate_2 + total_box + ope_year + is_subsidy + factor(year), data = col_key, offset(fm_cnt))
+summary(out_Q1_A2)
+```
+
+Comment: From the regression result above we can find that all the three kinds of collaborations have statistically significant influence on number of new combinations of existing keywords introduced. However, only central and hybrid collaborations have positive effect on it. In other words, central and hybrid collaborations are more likely to introduce new combinations of existing keywords. It's worth to mention that hybrid collaborations are even more beneficial to the generation of new combinations of existing keywords.
+
+# Q2
+
+### Generate average Jaccard similarity distance
+```{r,message=FALSE}
+#add Jaccard similarity below (can use saved rdata below directly)-----------------
+
+# jac_dist_all <- data.frame(pcindex=character(),jac_dist=double(),year=integer())
+# 
+# for (n in 1987:2019){
+# 
+# #generate affiliation matrix
+# prod_key_aff_mat <- prod_key %>%
+#   filter(year == n | year == n-1 | year == n-2) 
+# prod_key_aff_mat <- prod_key_aff_mat[,c('pcindex','keyword')]
+# 
+# prod_key_aff_mat <- as.matrix(as.data.frame.matrix(table(prod_key_aff_mat)))
+# 
+# #calculate Jaccard similarity distance regarding producers and key words in recent three years
+# prod_key_jac <- dist(prod_key_aff_mat,method='jaccard',by_rows = TRUE)
+# prod_key_jac <- as.matrix(prod_key_jac) #transfer to distance matrix
+# 
+# #transfer Jaccard distance matrix to pairwise list (each pcindex have a distance)
+# jac_dist <- data.table(pcindex=colnames(prod_key_jac)[col(prod_key_jac)], pcindex_2=rownames(prod_key_jac)[row(prod_key_jac)], jac_dist=c(prod_key_jac))
+# 
+# jac_dist <- jac_dist %>%
+#   filter(pcindex != pcindex_2) %>% 
+#   group_by(pcindex) %>% 
+#   summarise(jac_dist = mean(jac_dist)) %>% 
+#   mutate(year = n)
+# 
+# jac_dist_all <- bind_rows(jac_dist_all,jac_dist)
+# 
+# }
+
+#end of the for loop------------------------------------------------------------
+
+#since this for loop runs so so so long time, I save it so can reuse next time
+#save(jac_dist_all, file = "jac_dist_all.RData")
+load("jac_dist_all.RData")
+
+```
+
+### plot a figure that illustrates how Jaccard similarity distance relates to the number of new keywords a producer introduces each year
+```{r,message=FALSE}
+plot_Q2 <- col_key %>% 
+  dplyr::select(pcindex,year,new_key) %>% 
+  group_by(pcindex,year) %>% 
+  summarise(new_key = sum(new_key))
+
+plot_Q2 <- inner_join(plot_Q2,jac_dist_all,by=c('pcindex','year'))
+
+ggplot(plot_Q2, aes(x=jac_dist, y=new_key)) + 
+  geom_smooth(method= "loess", se = T) + 
+  labs(x = "Average Jaccard Distance", y = "Number of New keywords", 
+       title = 'Average Jaccard Distance and Number of New keywords Introduced') +
+  theme_light()
+```
+
+Comment: Jaccard similarity distance measures the co-occurrence of keywords that they use in films between producers. From the plot above, we can find that when Jaccard similarity distance is lower than 0.69, closer in distance has minimal influence on the number of new keywords a producer introduces. However, when the distance is between 0.75 and 0.88, closer in distance may relates to a higher number of new keywords a producer introduces. When distance larger than the threshold, the conclusion is not true anymore. This actually explains result in Q1 to some degree. Central collaboration means Jaccard similarity is high, this conlusion meets with Q1. However, hybrid collaboration means Jaccard similarity is low and this type of collaboration can still generate more key words according to the result.
+
+# Q3
+
+### Estimate a regression predicting producers’ standardized return
+```{r,message=FALSE}
+#calculate yearly return
+rev <- inner_join(rev,prod_fm[,c('pindex','year','pcindex')],by='pindex')
+
+return <- rev %>% dplyr::select(-budget) %>%
+  filter(release_coverage != 0) %>% 
+  mutate(return = total_box / release_coverage) %>% 
+  group_by(year,pcindex) %>% 
+  summarise(return = sum(return)) %>% 
+  group_by(year) %>% 
+  mutate(return_avg = mean(return),return_sd = sd(return)) %>%
+  mutate(return_std = (return - return_avg) / return_sd) %>% 
+  dplyr::select(year,pcindex,return_std)
+
+col_key <- left_join(col_key,return,by=c('year','pcindex'))
+
+#run regression
+out_Q3 <- lm(return_std ~ central_col + peripheral_col + hybrid_col + coordinate_1 + coordinate_2 + total_box + ope_year + is_subsidy + factor(year), data = col_key)
+summary(out_Q3)
+  
+```
+
+Comment: From the regression result above we can find that all the three kinds of collaborations have statistically significant influence on financial performance. However, only central collaborations have positive effect on it. In other words, central collaborations are more likely to bring financial returns. Operation years and subsidies also bring positive effects on it.
+
+# Q4
+
+## Q4(A)
+
+### Estimate a regression predicting the count of new keywords introduced in a producer’s solo produced films in a year
+```{r,message=FALSE}
+#filter out only solo produced films
+Q4_A <- col_key %>% 
+  filter(central_col == 0 & peripheral_col == 0 & hybrid_col == 0) %>% 
+  dplyr::select(pcindex,year, new_key, coordinate_1,coordinate_2,total_box,ope_year,is_subsidy,fm_cnt) %>% 
+  group_by(pcindex,year) %>% 
+  mutate(new_key_sum = sum(new_key))
+
+#Use as a predictor the cumulative number of new keywords a producer has introduced in all of its films through the current year that were made in “hybrid” collaborations.
+new_key_cum <- col_key %>% 
+  filter(hybrid_col == 1) %>% 
+  dplyr::select(year,new_key,pcindex) %>% 
+  group_by(pcindex,year) %>% 
+  arrange(pcindex,year) %>% 
+  mutate(new_key_cumsum = cumsum(new_key)) %>% 
+  dplyr::select(-pindex, -new_key)
+
+Q4_A <- left_join(Q4_A,new_key_cum,by=c('year','pcindex'))
+
+#run regression
+out_Q4_A <- glm.nb(new_key_sum ~ new_key_cumsum + coordinate_1 + coordinate_2 + total_box + ope_year + is_subsidy + factor(year), data = Q4_A, offset(fm_cnt))
+summary(out_Q4_A)
+```
+
+Comment: From the result above we can find that creative innovation gained through collaborations make a producer's own solo-produced films more innovative as well. It suggests that producers gain creativity from these collaborations in the long term.
+
+## Q4(B)
+
+### Estimate the a regression model regarding wether introducing new keywords result in higher box office returns
+```{r,message=FALSE}
+#run regression
+out_Q4_B <- lm(return_std ~ new_key + central_col + peripheral_col + hybrid_col + coordinate_1 + coordinate_2 + total_box + ope_year + is_subsidy + factor(year), data = col_key)
+summary(out_Q4_B)
+```
+
+Comment: From the result above we can find that introducing new keywords does not necessarily result in higher box office returns since the predictor is not statistically significant. Overall, the result explains that although there are some financial risks for producers to engage in collaborations, but they can gain creativity in the long term ,which may help their long-lasting development in the future.
+

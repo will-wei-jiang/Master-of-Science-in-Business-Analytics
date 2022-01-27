@@ -1,0 +1,201 @@
+---
+title: "HW2_Wei(Will)Jiang"
+author: "Wei (Will) Jiang"
+date: "11/2/2021"
+output: html_document
+---
+# Set up
+```{r,message=FALSE}
+library(tidyverse)
+library(splitstackshape)
+library(data.table)
+library(readxl)
+library(igraph)
+library(cluster)
+library(factoextra)
+library(proxy)
+events_1 <- fread("Funding_events_7.14.csv", head = TRUE)
+events_2 <- read_excel("Funding_events_7.14_page2.xlsx")
+firmout <- fread("Venture_capital_firm_outcomes.csv", head = TRUE)
+```
+
+# Data Cleaning
+
+```{r,message=FALSE}
+#combine two data set
+events_1$`Deal Date` <- format(as.Date(events_1$`Deal Date`, format = "%m/%d/%y"), "%Y-%m-%d")
+events_2$`Deal Date` <- format(as.Date(events_2$`Deal Date`, format = "%m/%d/%y"), "%Y-%m-%d")
+events <- rbind(events_1,events_2)
+
+#clean the data and generate ties by combining each other
+cleanfunc<- function(x,c1,c2) {
+  edge = unlist(strsplit(x[c1], split = ","))
+  if(length(edge) >= 2){
+    df = t(combn(edge,2))
+    df = as.data.frame(df)
+    df$date = x[c2]
+    return(as.data.frame(df))
+  }
+}
+edges_all <- apply(events, 1, cleanfunc, c1 = "Investors", c2 = "Deal Date")
+edges_all <- map(edges_all, as.data.frame)
+edges_all <- bind_rows(edges_all)
+colnames(edges_all) <- c('edge_in','edge_out','deal_date')
+edges_all = filter(edges_all, ((!edge_in %in% c(' Inc.',' Ltd.',' Co.',' LLC.',' Corp.','Inc.','Ltd.','Co.','LLC.','Corp.')) & (!edge_out %in% c(' Inc.',' Ltd.',' Co.',' LLC.',' Corp.','Inc.','Ltd.','Co.','LLC.','Corp.')))) #filter out unrelated date with wrong names
+edges_all <- arrange(edges_all,edge_in,edge_out,deal_date) #re-order
+
+#use lag and difftime to calculate renew days of each pairs
+edges_cal <- mutate(edges_all, p_edge_in = lag(edge_in),p_edge_out = lag(edge_out),p_deal_date = lag(deal_date))
+edges_cal <- mutate(edges_cal,renew_gap = as.integer(difftime(deal_date,p_deal_date,units = 'days')))
+edges_cal <- filter(edges_cal,edge_in == p_edge_in & edge_out == p_edge_out)
+#consider a tie to have decayed if it is not renewed within a certain amount of time: a time window greater than 90 percent of all renewal windows for all ties in the network
+decay_threshold <- as.integer(quantile(edges_cal$renew_gap,0.9,na.rm = TRUE)) #select decay threshold : 90 percentile of renew length
+
+#filter data with newest pair and is not decay
+max_date <- max(events$`Deal Date`)
+edges_exist <- edges_all %>%
+  group_by(edge_in,edge_out) %>%
+  arrange(desc(deal_date)) %>%
+  distinct(edge_in,edge_out,.keep_all= TRUE) %>% #select the most recent tie of pairs
+  mutate(gap = as.integer(difftime(max_date,deal_date,units = 'days')))
+
+edges_exist <- filter(edges_exist,gap < decay_threshold) #select ties that is not decay
+
+```
+
+# Q1: Closeness Centrality
+```{r,message=FALSE,error=FALSE}
+all_network <- graph.data.frame(edges_exist,directed = FALSE)
+all_closeness <- as.data.frame(closeness(all_network,normalized = TRUE))
+all_closeness <- arrange(all_closeness,desc(all_closeness))
+head(all_closeness)
+```
+Comment: As showed above, Kleiner Perkins Caufield & Byers is the center firm of the venture capital firm network as of July 2014 with highest closeness centrality. New Enterprise Associates, Intel Capital, Sequoia Capital, Google Ventures are the following center firms.
+
+# Q2: Average k-core Over Time
+```{r}
+#transfer deal_date to year-month format
+edges_q2 <- edges_exist
+edges_q2$deal_date <-  format(as.Date(edges_q2$deal_date, format = "%Y-%m-%d"), "%Y-%m")
+
+#assign continues number for each year-month group, earliest is 1 and latest is 40
+edges_q2 <- edges_q2 %>%
+ group_by(deal_date) %>%
+ mutate(date_id = cur_group_id())
+
+#calculate average coreness score of different companies by year-month
+sub_core <- c()
+time_period <- c(1:40)
+for (i in c(1:40)){
+sub_df <- filter(edges_q2,date_id %in% c(1:i))
+sub_network <- graph.data.frame(sub_df,directed = FALSE)
+sub_coreness <- mean(coreness(sub_network))
+sub_core <- append(sub_core,sub_coreness)
+}
+
+#plot over time
+plot(time_period,sub_core,xlab = 'time',ylab = 'coreness')
+lines(time_period,sub_core)
+
+```
+
+# Q3: Core-Periphery Structure
+## Q3(A): Concentration Scores
+```{r}
+#for 40 year-month pairs
+for (x in c(1:40)){
+
+#calculate eigenvector centrality of companies
+edges_q3 <- filter(edges_q2,date_id %in% c(1:x))
+network_q3 <- graph.data.frame(edges_q3,directed = FALSE)
+nodes_num <- length(V(network_q3)$name)
+all_eigen <- as.data.frame(eigen_centrality(network_q3))
+all_eigen <- all_eigen[,1]
+all_eigen <- sort(all_eigen, decreasing = TRUE) #order eigenvector centrality from highest to lowest
+
+#generate ideal coreness scores and calculate correlation
+partition <- c(1:(nodes_num-1))
+
+corr_value <- c()
+for (i in partition){
+  all_num <- c(rep(1,i),rep(0,nodes_num-i))
+  cor1 <- cor(all_eigen,all_num)
+  corr_value <- append(corr_value,cor1)
+}
+
+plot(partition,corr_value,ylab = 'correlation')
+
+}
+```
+
+Comment: From the 40 plots above we can see that the network appear to conform to a core-periphery structure with the highest level of correlation occurs at a level of 100+ that is greater than 1 and less than the number of nodes in the network. The presence of a best-fitting core with a moderate number of nodes provides good evidence that the network tends towards a core-periphery structure.
+
+## Q3(B): Descriptive Evidence
+```{r}
+#similar steps like above and plot the nodes in core (maximum concentration) and time period
+
+partition_nodes <- c()
+for (x in c(1:40)){
+
+#calculate eigenvector centrality of companies
+edges_q3 <- filter(edges_q2,date_id %in% c(1:x))
+network_q3 <- graph.data.frame(edges_q3,directed = FALSE)
+nodes_num <- length(V(network_q3)$name)
+all_eigen <- as.data.frame(eigen_centrality(network_q3))
+all_eigen <- all_eigen[,1]
+all_eigen <- sort(all_eigen, decreasing = TRUE) #order eigenvector centrality from highest to lowest
+
+#generate ideal coreness scores and calculate correlation
+partition <- c(1:(nodes_num-1))
+
+corr_value <- c()
+for (i in partition){
+  all_num <- c(rep(1,i),rep(0,nodes_num-i))
+  cor1 <- cor(all_eigen,all_num)
+  corr_value <- append(corr_value,cor1)
+  
+partition_gen <- partition[which(corr_value == max(corr_value))]
+}
+
+partition_nodes <- append(partition_nodes,partition_gen)
+}
+
+plot(time_period,partition_nodes)
+
+```
+
+Comments: As we can see from the plot above, with time going by, there are a number of nodes in the giant component of the network and they it is roughly stable , which shows that a particular core-periphery structure exists with time going by.
+
+# Q4
+```{r}
+#get the data before June 1996
+edges_q4 <- edges_all
+edges_q4 <- filter(edges_q4,deal_date < '1996-06-30')
+
+#build network and calculate distance 
+network_q4 <- graph.data.frame(edges_q4,directed = FALSE)
+network_q4_mat <- as_adjacency_matrix(network_q4)
+network_q4_dis <- dist(as.matrix(network_q4_mat))
+
+#calculate silhouette width for each number of cluster and plot it
+sil_width <- c()
+cluster <- c(2:20)
+
+for (k in 2:20){
+pam_network_q4 <- pam(network_q4_dis,k,keep.diss = TRUE)
+avg_sil <- pam_network_q4$silinfo$avg.width
+#sil <- silhouette(pam_network_q4$clustering,network_q4_dis) #plot silhouette figure
+sil_width <- append(sil_width,avg_sil)
+}
+
+cluster[which(sil_width == max(sil_width))] #find the cluster number which have max silhouette score
+plot(cluster,sil_width,type = 'l',ylab = 'silhouette width',xlab = 'cluster number')
+```
+
+Comment: 11 clusters is recommended if I tried to cluster the network in June of 1996 using partitioning around medoids. No clustering solution is suitable under the rule of thumb of achieving an average silhouette width greater than 0.5 (weaker threshold). It suggests that clustering methods measures distance and reachablity, and core-periphery approach measures correlation and similarity.
+
+
+
+
+
+
