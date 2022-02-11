@@ -1,0 +1,592 @@
+---
+title: "Graded Assignment 1 Solution"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+#Question 1
+
+Here is the sample code from the file HW1-Q1-Sample.r:
+
+```{R}
+
+AllData <- read.table("GradedHW1-All-Data.csv",header=T,sep=",",
+                      stringsAsFactors = F,na.strings="")
+
+AllData <- AllData[AllData$Bldg.Type=="1Fam",]
+
+RPerm <- sample(nrow(AllData))
+AllData <- AllData[RPerm,]
+
+TrainInd <- ceiling(nrow(AllData)/2)
+ValInd <- ceiling((nrow(AllData)-TrainInd)/2)+TrainInd
+
+TrainData <- AllData[1:TrainInd,]
+ValData <- AllData[(TrainInd+1):ValInd,]
+TestData <- AllData[(ValInd+1):nrow(AllData),]
+```
+#Q1.1
+```{R}
+is.integer(AllData)
+is.double(AllData)
+typeof(AllData)
+is.list(AllData)
+class(AllData)
+is.data.frame(AllData)
+is.matrix(AllData)
+```
+Answer is (c) A list and (d) A Data Frame
+
+#Q1.2
+
+The argument na.string="" in the call to read.table() means that a blank is interpreted as a missing value. Answer is (d).
+
+#Q1.2
+
+The line
+
+AllData <- AllData[AllData$Bldg.Type=="1Fam",]
+
+keeps only the rows of the data frame where Bldg.Type is "1Fam". There are the single family homes. Answer is (c).
+
+#Q1.4
+
+RPerm is a random permutation of the integers 1:n where n is the sample size. The line
+
+AllData <- AllData[RPerm,]
+
+ramdomly shuffles the rows of AllData based on the random permutation RPerm. Answer is (d).
+
+#Q1.5a and Q1.5b
+
+The sample code in HW1-Q1-Sample.r does, in fact, follow the instructions.
+```{R}
+nrow(TrainData)
+nrow(ValData)
+nrow(TestData)
+```
+
+#Question 2
+
+For this question and the remaining questions that follow, the training, validation, and test data sets provided should be used. So, first, they need to be read in:
+```{R}
+TrainData <- read.table("GradedHW1-Train-Data.csv",header=T,sep=",",
+                        stringsAsFactors = F,na.strings = "")
+ValData <- read.table("GradedHW1-Validation-Data.csv",header=T,sep=",",
+                      stringsAsFactors = F,na.strings = "")
+TestData <- read.table("GradedHW1-Test-Data.csv",header=T,sep=",",
+                      stringsAsFactors = F,na.strings = "")
+```
+Now I want to keep only the variables that will be used for the analysis (per the instructions). Note that Building Age is not a variable in the data set. I will have to be computed from the variable Year.Built and the current date (which the instructions say is May 2010).
+```{R}
+VarsWanted <- c("SalePrice","Lot.Area","Total.Bsmt.SF","Gr.Liv.Area",
+                "Full.Bath","Bedroom.AbvGr","Year.Built")
+
+TrainData <- TrainData[,VarsWanted]
+ValData <- ValData[,VarsWanted]
+TestData <- TestData[,VarsWanted]
+
+TrainData$Age <- 2010 - TrainData$Year.Built
+ValData$Age <- 2010 - ValData$Year.Built
+TestData$Age <- 2010 - TestData$Year.Built
+
+# Get rid of Year.Build
+TrainData$Year.Built <- NULL
+ValData$Year.Built <- NULL
+TestData$Year.Built <- NULL
+```
+I think I will begin by making sure I know how many observations are in each of these data sets:
+```{R}
+nrow(TrainData)
+nrow(ValData)
+nrow(TestData)
+```
+So all of the data sets are pretty small and there should be no issues with manipulating them in R.
+
+In exploring the variables, the next thing I think I want to make sure that I understand is what data type (in the computing sense) each of the variables is. As a sanity check, the type of the data stored should be consistent with what the variable is. Also, understanding the data types will help prevent coding errors.
+
+I am going to check the data types using the function sapply( ) which applies a function to a list (a data frame is a list).
+```{R}
+cat("Types:\n\n")
+sapply(TrainData,FUN=typeof)
+cat("\n\nClasses:\n\n")
+sapply(TrainData,FUN=class)
+```
+So, all the variables are some kind of number (as they should be based on the data dictionary).
+
+Next, I want to know if there are missing values. I'll show you how to use a  lambda function in R. A lambda function is a function that is created for temporary use and is never given a name. Also note that I want to know the situation with respect to missing values for the validation and test data sets as well as for the training data set.
+```{R}
+cat("Number of Missing Values in the Training data\n\n")
+sapply(TrainData,FUN=function(x) {sum(is.na(x))})
+cat("\n\nNumber of Missing Values in the Validation data\n\n")
+sapply(ValData,FUN=function(x) {sum(is.na(x))})
+cat("\n\nNumber of Missing Values in the Test data\n\n")
+sapply(TestData,FUN=function(x) {sum(is.na(x))})
+```
+So there is only 1 missing value and it is in the variable Total.Bsmt.SF in the Validation data.
+
+The R function summary will provide some basic stats on each of the variables:
+```{R}
+sapply(TrainData,FUN=summary)
+```
+The variables SalePrice, Lot.Area, Total.Bsmt.SF, Gr.Liv.Area and Age all look like they are skewed (e.g., compare the means and medians as well as the quartiles).
+
+Now I am going to look at each of these variables. There are a number of approaches I could use such as box plots, histograms, or qqplots. I will start with box plots. I will make a separate boxplot for each variable using a for loop because I want each plot to have a different Y scale.
+```{R}
+for(i in 1:length(TrainData)) {
+  boxplot(TrainData[[i]])
+  title(names(TrainData)[i])
+}
+```
+Histograms:
+```{R}
+for(i in 1:length(TrainData)) {
+  hist(TrainData[[i]],main=paste("Histogram of",names(TrainData)[i]))
+}
+```
+Now normal probability plots (R function qqnorm()).
+```{R}
+par(pty="s")
+for(i in 1:length(TrainData)) {
+  qqnorm(TrainData[[i]],main=paste("Normal Probability Plot  of",names(TrainData)[i]),pty="s")
+}
+```
+#Q2.2
+FullBath and Bedroom.Abv.Gr are not skewed. The other 4 variables show skewness. Building Age, while skewed, does not show outliers (see normal probabiliity plot above).
+
+So the answer to Q2.2 is Lot.Area, Total.Bsmt.SF
+
+Pretty clear that all of the variables except for the counts of bathrooms and bedrooms would benefit from transformation. Let's see ...
+```{R}
+TrainData$Log.SalePrice <- log(TrainData$SalePrice)
+TrainData$Log.Lot.Area <- log(TrainData$Lot.Area)
+# FixZero <- min(TrainData$Total.Bsmt.SF[TrainData$Total.Bsmt.SF>0])/3
+# TrainData$Log.Total.Bsmt.SF <- log(TrainData$Total.Bsmt.SF+FixZero)
+TrainData$Sqrt.Total.Bsmt.SF <- sqrt( TrainData$Total.Bsmt.SF)
+TrainData$Log.Gr.Liv.Area <- log(TrainData$Gr.Liv.Area)
+TrainData$Log.Age <- log(TrainData$Age+1)
+TrainData$Sqrt.Age <- sqrt(TrainData$Age)
+
+whVars <- c("Log.SalePrice","Log.Lot.Area","Sqrt.Total.Bsmt.SF",
+            "Log.Gr.Liv.Area","Sqrt.Age")
+par(pty="s")
+for(VarName in whVars) {
+  qqnorm(TrainData[[VarName]],
+         main=paste("Normal Probability Plot of",VarName))
+}
+```
+So here is the interpretation. Log of SalePrice looks excellent. Log of Lot.Area is greatly improved. Something appears to be going on in the right tail. Maybe some sort of bimodal situation (e.g., farms with single fmily homes). Log of Total.Bsmt.SF is probably over transformed, so I tried sqrt. Gr.Liv.Area is made more symmetric by the log. Log overtransforms Age, so I tried sqrt instead.
+
+So I think the best transformations are Log.SalePrice, Log.Lot.Area, Sqrt.Total.Bsmt.SF, Log.Gr.Liv.Area, and Sqrt.Age
+
+#Question 3
+
+First, I am going to create a data frame for storing the final results of the best models for the validation data.
+
+The questions (Q3 to Q10) ask you to run and compare two cases: raw variables (untransformed) and transformed variables. But there is also a question of whether or not the variables should be standardized. When using knn, standardizing the variables is generally recommended. So I am also going to run cases for unstandardized and standardized variables. Thus, the four cases are:
+
+1. Raw, unstandardized
+2. Raw, standardized
+3. Tansformed, unstandardized
+4. Transformed, standardized
+
+The following code sets up the table.
+```{R}
+ValSumTab <- data.frame(Bestk=rep(NA,4),RawRtMSE=rep(NA,4),TransRtMSE=rep(NA,4))
+rownames(ValSumTab) <- c("Raw","RawStnd","Trans","TransStnd")
+
+TestSumTab <- ValSumTab
+```
+We need the library FNN to run the knn.reg function.
+
+The code below begins by pulling out the variables we want to use. The knn.reg function does not allow missing values, so only complete cases are used. The SalePrice values for the complete cases are then pulled out for both the training and validation samples.
+
+I then go on to run the knn regression for k from 1 to 40 saving the square root of the MSE of the SalePrice predictions.
+
+The next piece of code makes a plot of the square root of the MSE against k and saves out the best values.
+
+The best model is then recomputed and the RtMSE calculated on the transformed scale for SalePrice (i.e., on the log scale).
+
+Finally, the Raw and Transformed RtMSEs are calculated for the test data. WE CANNOT USE THE TEST DATA TO PICK THE MODEL. Thus, we cannot look at these results until the very end. I would really rather not even compute the results for the test data until the end, but it is more convenient to do it now.
+```{R}
+
+library("FNN")
+
+whVars <- c("Lot.Area","Total.Bsmt.SF","Gr.Liv.Area","Full.Bath",
+            "Bedroom.AbvGr","Age")
+
+KnnTrainDF <- TrainData[,whVars,drop=F]
+whTrainComplete <- complete.cases(cbind(KnnTrainDF,TrainData$SalePrice))
+KnnTrainDF <- KnnTrainDF[whTrainComplete,]
+
+KnnValDF <- ValData[,whVars,drop=F]
+whValComplete <- complete.cases(cbind(KnnValDF,ValData$SalePrice)) 
+KnnValDF <- KnnValDF[whValComplete,]
+
+KnnTestDF <- TestData[,whVars,drop=F]
+whTestComplete <- complete.cases(cbind(KnnTestDF,TestData$SalePrice)) 
+KnnTestDF <- KnnTestDF[whValComplete,]
+
+y <- TrainData$SalePrice[whTrainComplete]
+y.Val <- ValData$SalePrice[whValComplete]
+
+RtMSE <- rep(NA,40)
+for(i in 1:40) {
+  out <- knn.reg(train=KnnTrainDF,test=KnnValDF,y=y,k=i)
+  RtMSE[i] <- sqrt(mean((out$pred-y.Val)^2))
+}
+
+# Make a plot and save the best values.
+
+Bestk <- which.min(RtMSE)
+ValSumTab["Raw","Bestk"]<- Bestk
+ValSumTab["Raw","RawRtMSE"] <- RtMSE[Bestk]
+
+plot(RtMSE)
+title(paste("Raw Variables without Standardization: Root MSE vs k\nBest k = ",Bestk,"; Root MSE = ",round(RtMSE[Bestk],4),sep=""))
+abline(v=Bestk)
+
+out <- knn.reg(train=KnnTrainDF,test=KnnValDF,y=y,k=Bestk)
+ValSumTab["Raw","TransRtMSE"] <- sqrt(mean((log(out$pred)-log(y.Val))^2))
+
+# Calculations for the test data
+
+KnnTestDF <- TestData[,whVars,drop=F]
+whTestComplete <- complete.cases(cbind(KnnTestDF,TestData$SalePrice)) 
+KnnTestDF <- KnnTestDF[whTestComplete,]
+
+y.Test <- TestData$SalePrice[whTestComplete]
+
+out <- knn.reg(train=KnnTrainDF,test=KnnTestDF,y=y,k=Bestk)
+TestSumTab["Raw","Bestk"] <- Bestk
+TestSumTab["Raw","RawRtMSE"] <- sqrt(mean((out$pred-y.Test)^2))
+TestSumTab["Raw","TransRtMSE"] <- sqrt(mean((log(out$pred)-log(y.Test))^2))
+
+```
+#Q 3.1 and 3.2
+
+The root MSEs are in the vector RtMSE where k corresponds to the index of the RtMSE vector. So we need RtMSE[1] and RtMSE[20]:
+
+```{R}
+cat("k=1, RtMSE =",round(RtMSE[1],2),"\n")
+cat("k=20, RtMSE =",round(RtMSE[20],2),"\n")
+```
+#Q 4.1 and Q4.2
+
+The best k is in the variable Bestk. The question asked for the root MSE for the test data. I stored that in the table TestSumTab. Specifically, it is retrieved by TestSumTab["Raw","RawRtMSE"]:
+
+```{R}
+cat("The best k = ",Bestk,"; best validation Root MSE = ",round(RtMSE[Bestk],2),"; test Root MSE = ",TestSumTab["Raw","RawRtMSE"],"\n")
+```
+Now we need the Root MSE on the test data for k = 12. It is in the RawRtMSE column:
+```{R}
+TestSumTab['Raw',]
+```
+#Question 5
+
+The next code chunk repeats the knn regressions, but with the x-variables standardized.
+
+Standardizing each of the variables is done by defining a little function that standarizes a vector, and then "applying" it (using the function apply( )) to the columns of the data frames used in the knn regression. The output from apply(  ) is not a data frame, so I use data.frame( ) to change the output into a data frame. Again,the best values are saved, a plot is made, and the RtMSE is calculated on the transformed scale as well.
+
+#Q5.1
+
+You don't really need to standardize the SalePrice variable. The k-nn regression is very sensitive to standardization of the x-variables since this affects what observations are nearest neighbors, but standardizing the Y-variable does not influence the nearest neighbors. It is not wrong to standardize the Y, just not necessary. So the preferred answer to Q5.1 is no to all three. But if you do standardize the Y variable, you need to standardize it for all three data sets.
+
+```{R}
+# Make new data frames for standardized variables by copying unstandardized data frames
+StndKnnTrainDF <- KnnTrainDF
+StndKnnValDF <- KnnValDF
+StndKnnTestDF <- KnnTestDF
+# Overwrite each variable with the standardized variable. Use that mean and sd from the
+# Training data to standardize the validation and test data.
+for(i in 1:length(KnnTrainDF)) {
+  TrainMean <- mean(KnnTrainDF[[i]])
+  TrainSD <- sd(KnnTrainDF[[i]])
+  StndKnnTrainDF[,names(KnnTrainDF)[i]] <- (KnnTrainDF[[i]]-TrainMean)/TrainSD
+  StndKnnValDF[,names(KnnTrainDF)[i]] <- (KnnValDF[[i]]-TrainMean)/TrainSD
+  StndKnnTestDF[,names(KnnTrainDF)[i]] <- (KnnTestDF[[i]]-TrainMean)/TrainSD
+}
+# Check that the column means and sds are for the training data are exactly 0 and 1
+cat("StndKnnTrainDF\n")
+apply(StndKnnTrainDF,2,mean)
+apply(StndKnnTrainDF,2,sd)
+# For the validation and test data, the means and sds should not be too far from 0 and 1
+cat("\nStndKnnValDF\n")
+apply(StndKnnValDF,2,mean)
+apply(StndKnnValDF,2,sd)
+cat("\nStndKnnTestDF\n")
+apply(StndKnnTestDF,2,mean)
+apply(StndKnnTestDF,2,sd)
+```
+Everything looks reasonable.
+
+Now fit the knn models and make the predictions
+```{R}
+
+# Note: In the code below, y and y.val were defined in the main code block
+# for Question 3
+
+RtMSE <- rep(NA,40)
+for(i in 1:40) {
+  out <- knn.reg(train=StndKnnTrainDF,test=StndKnnValDF,y=y,k=i)
+  RtMSE[i] <- sqrt(mean((out$pred-y.Val)^2))
+}
+
+Bestk <- which.min(RtMSE)
+ValSumTab["RawStnd","Bestk"] <- Bestk
+ValSumTab["RawStnd","RawRtMSE"] <- RtMSE[Bestk]
+
+plot(RtMSE)
+title(paste("Raw Variables Standardized: Root MSE vs k\nBest k = ",Bestk,"; Root MSE = ",round(RtMSE[Bestk],4),sep=""))
+abline(v=Bestk)
+
+out <- knn.reg(train=StndKnnTrainDF,test=StndKnnValDF,y=y,k=Bestk)
+ValSumTab["RawStnd","TransRtMSE"] <-  sqrt(mean((log(out$pred)-log(y.Val))^2))
+
+# Calculations for the test data
+
+#StndKnnTestDF <- data.frame(apply(KnnTestDF,2,FUN=fn))
+
+out <- knn.reg(train=StndKnnTrainDF,test=StndKnnTestDF,y=y,k=Bestk)
+TestSumTab["RawStnd","Bestk"] <- Bestk
+TestSumTab["RawStnd","RawRtMSE"] <- sqrt(mean((out$pred-y.Test)^2))
+TestSumTab["RawStnd","TransRtMSE"] <- sqrt(mean((log(out$pred)-log(y.Test))^2))
+
+```
+#Q 5.1 and Q5.2
+
+Once again, the root MSE is in the vector RtMSE. Here are the root MSEs for k=1 and k=20
+
+```{R}
+cat("k=1, RtMSE =",round(RtMSE[1],2),"\n")
+cat("k=20, RtMSE =",round(RtMSE[20],2),"\n")
+```
+
+#Question 6
+
+#Q6.1 and Q6.2
+
+The best k is in the variable Bestk, and the root MSE for the validation data is in RtMSE[Bestk]. The root MSE for the test data is in TestSumTab["RawStnd","RawRtMSE"].
+
+```{R}
+cat("The best k = ",Bestk,"; best validation Root MSE = ",round(RtMSE[Bestk],2),"; test root MSE = ",TestSumTab["RawStnd","RawRtMSE"],"\n")
+```
+Here is the root MSE for the test data (in the RawRtMSE column):
+```{R}
+TestSumTab['RawStnd',]
+```
+#Question 7
+
+For Question 2, we already determined the transformation that we would like to use and added columns for the transformed variables to the TrainData dataframe. Thus we can access these transformed variables just by using their column names. We have not transformed the variables in the validation data set ValData. This is the first thing we do.
+
+The code then proceeds as before.
+
+When we get to the section for the test data set, we will also need to create the transformed variables first.
+```{R}
+
+# Need to transform the validation data set
+
+ValData$Log.Lot.Area <- log(ValData$Lot.Area)
+ValData$Sqrt.Total.Bsmt.SF <- sqrt(ValData$Total.Bsmt.SF)
+ValData$Log.Gr.Liv.Area <- log(ValData$Gr.Liv.Area)
+ValData$Sqrt.Age <- sqrt(ValData$Age)
+ValData$Log.SalePrice <- log(ValData$SalePrice)
+
+# Now the code is essentially the same as before.
+
+whVars <- c("Log.Lot.Area","Sqrt.Total.Bsmt.SF","Log.Gr.Liv.Area","Full.Bath",
+            "Bedroom.AbvGr","Sqrt.Age")
+
+KnnTrainDF <- TrainData[,whVars,drop=F]
+whTrainComplete <- complete.cases(cbind(KnnTrainDF,TrainData$Log.SalePrice))
+KnnTrainDF <- KnnTrainDF[whTrainComplete,]
+
+KnnValDF <- ValData[,whVars,drop=F]
+whValComplete <- complete.cases(cbind(KnnValDF,ValData$Log.SalePrice)) 
+KnnValDF <- KnnValDF[whValComplete,]
+
+y <- TrainData$Log.SalePrice[whTrainComplete]
+y.Val <- ValData$Log.SalePrice[whValComplete]
+
+RtMSE <- rep(NA,40)
+RtMSERaw <- rep(NA,40)
+for(i in 1:40) {
+  out <- knn.reg(train=KnnTrainDF,test=KnnValDF,y=y,k=i)
+  RtMSE[i] <- sqrt(mean((out$pred-y.Val)^2))
+  RtMSERaw[i] <- sqrt(mean((exp(out$pred)-exp(y.Val))^2))
+}
+
+Bestk <- which.min(RtMSE)
+ValSumTab["Trans","Bestk"] <- Bestk
+ValSumTab["Trans","TransRtMSE"] <- RtMSE[Bestk]
+
+plot(RtMSE)
+title(paste("Transformed Variables without Standardization: Root MSE vs k\nBest k = ",Bestk,"; Root MSE = ",round(RtMSE[Bestk],4),sep=""))
+abline(v=Bestk)
+
+out <- knn.reg(train=KnnTrainDF,test=KnnValDF,y=y,k=Bestk)
+ValSumTab["Trans","RawRtMSE"] <-  sqrt(mean((exp(out$pred)-exp(y.Val))^2))
+
+# Calculations for the test data
+
+# Need to transform the test data set
+
+TestData$Log.Lot.Area <- log(TestData$Lot.Area)
+TestData$Sqrt.Total.Bsmt.SF <- sqrt(TestData$Total.Bsmt.SF)
+TestData$Log.Gr.Liv.Area <- log(TestData$Gr.Liv.Area)
+TestData$Sqrt.Age <- sqrt(TestData$Age)
+TestData$Log.SalePrice <- log(TestData$SalePrice)
+
+KnnTestDF <- TestData[,whVars,drop=F]
+whTestComplete <- complete.cases(cbind(KnnTestDF,TestData$SalePrice)) 
+KnnTestDF <- KnnTestDF[whTestComplete,]
+
+y.Test <- TestData$Log.SalePrice[whTestComplete]
+
+out <- knn.reg(train=KnnTrainDF,test=KnnTestDF,y=y,k=Bestk)
+TestSumTab["Trans","Bestk"] <- Bestk
+TestSumTab["Trans","TransRtMSE"] <- sqrt(mean((out$pred-y.Test)^2))
+TestSumTab["Trans","RawRtMSE"] <- sqrt(mean((exp(out$pred)-exp(y.Test))^2))
+```
+
+# Question 8
+
+#Q8.1
+
+Transformation (obviously) is different that standardization. The Y variable really should be transformed (just like the x-variables) and should be transformed for all three data sets: training, validation, and test. So the answer to Q8.1 should be Yes, Yes, and Yes.
+
+#Q8.2 and Q8.3
+
+The best k is in the variable Bestk and the root MSE is in RtMSE[Bestk]:
+
+```{R}
+cat("The best k = ",Bestk,": best Root MSE = ",round(RtMSE[Bestk],2),"\n")
+```
+Here is the root MSE for the test data (in the TransRtMSE column):
+```{R}
+TestSumTab['Trans',]
+```
+#Question 9
+
+We now standardize the transformed variables and proceed as before. This standardization will likely remove the odd behavior that we observed for the transformed unstandardized data. We do not need to standardize the transformed Y variable, but it is not wrong to do so.
+
+```{R}
+# Make new data frames for standardized variables by copying unstandardized data frames
+StndKnnTrainDF <- KnnTrainDF
+StndKnnValDF <- KnnValDF
+StndKnnTestDF <- KnnTestDF
+# Overwrite each variable with the standardized variable. Use that mean and sd from the
+# Training data to standardize the validation and test data.
+for(i in 1:length(KnnTrainDF)) {
+  TrainMean <- mean(KnnTrainDF[[i]])
+  TrainSD <- sd(KnnTrainDF[[i]])
+  StndKnnTrainDF[,names(KnnTrainDF)[i]] <- (KnnTrainDF[[i]]-TrainMean)/TrainSD
+  StndKnnValDF[,names(KnnTrainDF)[i]] <- (KnnValDF[[i]]-TrainMean)/TrainSD
+  StndKnnTestDF[,names(KnnTrainDF)[i]] <- (KnnTestDF[[i]]-TrainMean)/TrainSD
+}
+# Check that the column means and sds are for the training data are exactly 0 and 1
+cat("StndKnnTrainDF\n")
+apply(StndKnnTrainDF,2,mean)
+apply(StndKnnTrainDF,2,sd)
+# For the validation and test data, the means and sds should not be too far from 0 and 1
+cat("\nStndKnnValDF\n")
+apply(StndKnnValDF,2,mean)
+apply(StndKnnValDF,2,sd)
+cat("\nStndKnnTestDF\n")
+apply(StndKnnTestDF,2,mean)
+apply(StndKnnTestDF,2,sd)
+```
+```{R}
+RtMSE <- rep(NA,40)
+RawRtMSE <- rep(NA,40)
+for(i in 1:40) {
+  out <- knn.reg(train=StndKnnTrainDF,test=StndKnnValDF,y=y,k=i)
+  RtMSE[i] <- sqrt(mean((out$pred-y.Val)^2))
+  # This is not the RtMSE you should use. I only have it here for the purposes of grading.
+  RawRtMSE[i] <- sqrt(mean((exp(out$pred)-exp(y.Val))^2))
+}
+
+Bestk <- which.min(RtMSE)
+ValSumTab["TransStnd","Bestk"] <- Bestk
+ValSumTab["TransStnd","TransRtMSE"] <- RtMSE[Bestk]
+
+plot(RtMSE)
+title(paste("Transformed Variables Standardized: Root MSE vs k\nBest k = ",Bestk,"; Root MSE = ",round(RtMSE[Bestk],4),sep=""))
+abline(v=Bestk)
+
+out <- knn.reg(train=StndKnnTrainDF,test=StndKnnValDF,y=y,k=Bestk)
+ValSumTab["TransStnd","RawRtMSE"] <-  sqrt(mean((exp(out$pred)-exp(y.Val))^2))
+
+# Calculations for the test data
+
+#StndKnnTestDF <- data.frame(apply(KnnTestDF,2,FUN=fn))
+
+out <- knn.reg(train=StndKnnTrainDF,test=StndKnnTestDF,y=y,k=Bestk)
+TestSumTab["TransStnd","Bestk"] <- Bestk
+TestSumTab["TransStnd","TransRtMSE"] <- sqrt(mean((out$pred-y.Test)^2))
+TestSumTab["TransStnd","RawRtMSE"] <- sqrt(mean((exp(out$pred)-exp(y.Test))^2))
+```
+
+#Question 10
+
+#Q10.1
+
+Once again, you do not need to standardize the Y variable as this does not affect the nearest neighbors. But you do have to transform the Y variable.
+
+This question is a bad question. I think the preferred thing for you to do is to have transformed the Y variable but not standardized it. Thus, the best answer here is No, No, and No.
+
+#Q10.2 and Q10.3
+
+The best k is in the variable Bestk and the root MSE is in RtMSE[Bestk]:
+
+```{R}
+cat("The best k = ",Bestk,": best Root MSE = ",round(RtMSE[Bestk],2),"\n")
+```
+Here is the root MSE for the test data (in the TransRtMSE column):
+```{R}
+TestSumTab['TransStnd',]
+```
+
+#Question 11
+
+#Q11.1 and Q11.2
+
+Next print out the summary table for the validation data set. (DO NOT LOOK AT THE TEST RESULTS!)
+
+Here is the ValSumTab table:
+```{R}
+ValSumTab
+```
+
+Note that the RMSEs mean different things on different scales. Thus the "best" answer may well depend on whether or not the data were transformed. In order to compare models, I have computed the RMSE of the predictions for both the untransformed Y variable as well as for the transformed Y variable. The results for the 4 "best" models are shown in the table above.
+
+This table indicates that the best model on both the transformed and untransformed scales is the k=12 model using the untransformed (raw) but standardized data.
+
+Since both of the scales give us the same answer, there is no ambiguity.
+
+Note: We got lucky here that the best model for both Y transformed and Y untransformed happen to be the same.
+
+Thus, the answer for Q11.1 is:
+
+"The best model is for the raw standardized data and k=12"
+
+Note that the raw standardized model with k=12 and the transformed standardized model with k=8 are vitually identical with the raw standardized model having only a slight edge. 
+
+NOW, we can look at the test data set to get an estimate of the RtMSE of this model. Note that we cannot change our decision based on the test data set results.
+
+Here is the test data summary:
+```{R}
+TestSumTab
+```
+So the estimate of the root MSE is about $45,000.
+
+Things to note:
+
+1. We do not really know the sale price very well using these variables. This is not that surprising since was have ignored location, condition, and some other variables that one would expect are very important.
+
+2. This problem provides an example where standardization matters a lot (especially for the transformed variables). This shows how sensitive to the scale kNN regression can be.
+
+3. In this case, the untransformed standardized model is slightly better than the transformed standardized model. This might lead you to conclude that transforming variables is not important or not a good idea. That conclusion would be wrong. 
